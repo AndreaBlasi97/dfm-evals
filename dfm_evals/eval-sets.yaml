@@ -1,0 +1,10 @@
+sets:
+  multi-wiki-qa-smoke:
+    description: Quick smoke run for the local MultiWikiQA task
+    tasks:
+      - dfm_evals/multi_wiki_qa
+    args:
+      - --limit
+      - "20"
+      - --temperature
+      - "0"

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dfm-evals"
+version = "0.1.0"
+description = "Minimal eval CLI and tasks for inspect_ai"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Company" }]
+dependencies = [
+  "datasets>=2.0",
+  "inspect_ai",
+  "PyYAML>=6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+evals = "dfm_evals.cli:main"
+
+[project.entry-points.inspect_ai]
+dfm_evals = "dfm_evals._registry"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dfm_evals*"]
+
+[tool.setuptools.package-data]
+dfm_evals = ["eval-sets.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
