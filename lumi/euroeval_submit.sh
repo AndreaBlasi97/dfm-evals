@@ -17,6 +17,9 @@ fi
 
 SUBMIT_SCRIPT=${SUBMIT_SCRIPT:-$DEFAULT_SUBMIT_SCRIPT}
 OVERLAY_DIR=${OVERLAY_DIR:-$REPO_ROOT/overlay_vllm_minimal}
+if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
+  OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
+fi
 
 MODEL=${MODEL:-Qwen/Qwen3.5-397B-A17B}
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-$MODEL}
@@ -30,7 +33,10 @@ RUN_EUROEVAL=${RUN_EUROEVAL:-1}
 EUROEVAL_MODEL=${EUROEVAL_MODEL:-$SERVED_MODEL_NAME}
 EUROEVAL_LANGUAGES=${EUROEVAL_LANGUAGES:-en}
 EUROEVAL_TASKS=${EUROEVAL_TASKS:-}
-EUROEVAL_NUM_ITERATIONS=${EUROEVAL_NUM_ITERATIONS:-10}
+EUROEVAL_NUM_ITERATIONS=${EUROEVAL_NUM_ITERATIONS:-1}
+EUROEVAL_CONCURRENCY_MODE=${EUROEVAL_CONCURRENCY_MODE:-adaptive}
+EUROEVAL_MAX_CONCURRENT_CALLS=${EUROEVAL_MAX_CONCURRENT_CALLS:-1000}
+EUROEVAL_GENERATIVE_TYPE=${EUROEVAL_GENERATIVE_TYPE:-auto}
 EUROEVAL_EXTRA_ARGS=${EUROEVAL_EXTRA_ARGS:-}
 SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
 TIME_LIMIT=${TIME_LIMIT:-}
@@ -55,7 +61,10 @@ Options:
   --euroeval-model <id>      EuroEval model id (default: <served-model-name>)
   --languages <csv>          EuroEval languages (default: en)
   --tasks <csv>              EuroEval tasks (default: all)
-  --iterations <n>           EuroEval num iterations (default: 10)
+  --iterations <n>           EuroEval num iterations (default: 1)
+  --concurrency-mode <mode>  EuroEval concurrency mode: fixed|adaptive|auto (default: adaptive)
+  --max-concurrent-calls <n> EuroEval max concurrent calls (default: 1000)
+  --generative-type <type>   EuroEval generative type: auto|base|instruction_tuned|reasoning (default: auto)
   --extra-args <string>      Extra args appended to EuroEval CLI
   --time <HH:MM:SS>          Slurm time limit override (default: from sbatch file)
   --slurm-log-dir <path>     Slurm stdout/err directory (default: ./logs/slurm)
@@ -66,6 +75,7 @@ Options:
 Examples:
   ./lumi/euroeval_submit.sh
   ./lumi/euroeval_submit.sh --languages en,da --iterations 1
+  ./lumi/euroeval_submit.sh --concurrency-mode adaptive --max-concurrent-calls 1000
   ./lumi/euroeval_submit.sh --tasks "knowledge,summarization"
   ./lumi/euroeval_submit.sh --time 12:00:00
   ./lumi/euroeval_submit.sh --slurm-log-dir /path/to/slurm-logs
@@ -151,6 +161,38 @@ while [[ $# -gt 0 ]]; do
       EUROEVAL_NUM_ITERATIONS="$2"
       shift 2
       ;;
+    --concurrency-mode)
+      need_value "$1" "$#"
+      EUROEVAL_CONCURRENCY_MODE="$2"
+      case "$EUROEVAL_CONCURRENCY_MODE" in
+        fixed|adaptive|auto)
+          ;;
+        *)
+          die "invalid --concurrency-mode: $EUROEVAL_CONCURRENCY_MODE (expected fixed|adaptive|auto)"
+          ;;
+      esac
+      shift 2
+      ;;
+    --max-concurrent-calls)
+      need_value "$1" "$#"
+      EUROEVAL_MAX_CONCURRENT_CALLS="$2"
+      shift 2
+      ;;
+    --generative-type)
+      need_value "$1" "$#"
+      EUROEVAL_GENERATIVE_TYPE="$2"
+      case "$EUROEVAL_GENERATIVE_TYPE" in
+        auto|base|instruction_tuned|reasoning)
+          ;;
+        instruction-tuned)
+          EUROEVAL_GENERATIVE_TYPE="instruction_tuned"
+          ;;
+        *)
+          die "invalid --generative-type: $EUROEVAL_GENERATIVE_TYPE (expected auto|base|instruction_tuned|reasoning)"
+          ;;
+      esac
+      shift 2
+      ;;
     --extra-args)
       need_value "$1" "$#"
       EUROEVAL_EXTRA_ARGS="$2"
@@ -208,6 +250,9 @@ env_kv=(
   "EUROEVAL_MODEL=$EUROEVAL_MODEL"
   "EUROEVAL_LANGUAGES=$EUROEVAL_LANGUAGES"
   "EUROEVAL_NUM_ITERATIONS=$EUROEVAL_NUM_ITERATIONS"
+  "EUROEVAL_CONCURRENCY_MODE=$EUROEVAL_CONCURRENCY_MODE"
+  "EUROEVAL_MAX_CONCURRENT_CALLS=$EUROEVAL_MAX_CONCURRENT_CALLS"
+  "EUROEVAL_GENERATIVE_TYPE=$EUROEVAL_GENERATIVE_TYPE"
   "EUROEVAL_SLURM_LOG_DIR=$SLURM_LOG_DIR"
 )
 if [[ -n "$EUROEVAL_TASKS" ]]; then
@@ -230,6 +275,9 @@ echo "EuroEval model: $EUROEVAL_MODEL"
 echo "EuroEval languages: $EUROEVAL_LANGUAGES"
 echo "EuroEval tasks: ${EUROEVAL_TASKS:-<all>}"
 echo "EuroEval iterations: $EUROEVAL_NUM_ITERATIONS"
+echo "EuroEval concurrency mode: $EUROEVAL_CONCURRENCY_MODE"
+echo "EuroEval max concurrent calls: $EUROEVAL_MAX_CONCURRENT_CALLS"
+echo "EuroEval generative type: $EUROEVAL_GENERATIVE_TYPE"
 if [[ -n "$TIME_LIMIT" ]]; then
   echo "Slurm time limit override: $TIME_LIMIT"
 fi

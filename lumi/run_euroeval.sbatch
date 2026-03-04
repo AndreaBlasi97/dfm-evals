@@ -1,5 +1,5 @@
 #!/bin/bash
-# Two-node vLLM MP launch using a single srun step (one task per node),
+# Multi-node vLLM MP launch using a single srun step (one task per node),
 # followed by EuroEval against the in-job OpenAI-compatible vLLM endpoint.
 
 #SBATCH --job-name=vllm-q35-2n-euroeval
@@ -25,6 +25,9 @@ BASE_DIR=/pfs/lustref1/appl/local/laifs
 LAIFS_APPL_DIR=/appl/local/laifs
 SIF=${SIF:-$BASE_DIR/containers/lumi-multitorch-u24r64f21m43t29-20260216_093549/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif}
 OVERLAY_DIR=${OVERLAY_DIR:-$REPO_ROOT/overlay_vllm_minimal}
+if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
+  OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
+fi
 
 MODEL=${MODEL:-Qwen/Qwen3.5-397B-A17B}
 SERVED_MODEL_NAME=${SERVED_MODEL_NAME:-$MODEL}
@@ -35,21 +38,32 @@ TP=${TP:-4}
 PP=${PP:-4}
 CTX=${CTX:-8192}
 GPU_MEM=${GPU_MEM:-0.92}
+VLLM_SERVER_API_KEY=${VLLM_SERVER_API_KEY:-${VLLM_API_KEY:-}}
 
 RUN_EUROEVAL=${RUN_EUROEVAL:-1}
 EUROEVAL_MODEL=${EUROEVAL_MODEL:-$SERVED_MODEL_NAME}
 EUROEVAL_API_BASE=${EUROEVAL_API_BASE:-http://127.0.0.1:$PORT/v1}
 EUROEVAL_LANGUAGES=${EUROEVAL_LANGUAGES:-en}
 EUROEVAL_TASKS=${EUROEVAL_TASKS:-}
-EUROEVAL_NUM_ITERATIONS=${EUROEVAL_NUM_ITERATIONS:-10}
+EUROEVAL_NUM_ITERATIONS=${EUROEVAL_NUM_ITERATIONS:-1}
+EUROEVAL_CONCURRENCY_MODE=${EUROEVAL_CONCURRENCY_MODE:-adaptive}
+EUROEVAL_MAX_CONCURRENT_CALLS=${EUROEVAL_MAX_CONCURRENT_CALLS:-1000}
+EUROEVAL_GENERATIVE_TYPE=${EUROEVAL_GENERATIVE_TYPE:-auto}
 EUROEVAL_CACHE_DIR=${EUROEVAL_CACHE_DIR:-/overlay/euroeval-cache-${SLURM_JOB_ID:-manual}}
 EUROEVAL_RUN_DIR=${EUROEVAL_RUN_DIR:-/overlay/euroeval-runs/${SLURM_JOB_ID:-manual}}
+EUROEVAL_EXPORT_EEE=${EUROEVAL_EXPORT_EEE:-1}
+EUROEVAL_EEE_OUTPUT_DIR=${EUROEVAL_EEE_OUTPUT_DIR:-}
+EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME=${EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME:-dfm-evals}
+EUROEVAL_EEE_EVALUATOR_RELATIONSHIP=${EUROEVAL_EEE_EVALUATOR_RELATIONSHIP:-third_party}
 EUROEVAL_RAISE_ERRORS=${EUROEVAL_RAISE_ERRORS:-1}
 EUROEVAL_EXTRA_ARGS=${EUROEVAL_EXTRA_ARGS:-}
 SLURM_JOB_ID_SAFE=${SLURM_JOB_ID:-manual}
 EUROEVAL_SLURM_LOG_DIR=${EUROEVAL_SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
 RANK_LOG_PATH="${EUROEVAL_SLURM_LOG_DIR}/vllm-q35-mp1-rank-%t-${SLURM_JOB_ID_SAFE}.log"
 COMPLETION_FILE="${EUROEVAL_SLURM_LOG_DIR}/completion-qwen35-mp1-${SLURM_JOB_ID_SAFE}.json"
+if [[ -z "$EUROEVAL_EEE_OUTPUT_DIR" ]]; then
+  EUROEVAL_EEE_OUTPUT_DIR="${EUROEVAL_RUN_DIR}/every_eval_ever"
+fi
 
 MASTER_ADDR=${MASTER_ADDR:-}
 MASTER_PORT=${MASTER_PORT:-29501}
@@ -82,6 +96,7 @@ ENABLE_AUTO_TOOL_CHOICE=${ENABLE_AUTO_TOOL_CHOICE:-0}
 TORCHDYNAMO_DISABLE=${TORCHDYNAMO_DISABLE:-1}
 REASONING_PARSER=${REASONING_PARSER:-auto}
 STRUCTURED_OUTPUTS_CONFIG=${STRUCTURED_OUTPUTS_CONFIG:-}
+LORA_MAX_RANK_OVERRIDE=${LORA_MAX_RANK_OVERRIDE:-}
 
 SRUN_PID=""
 HEAD_NODE=""
@@ -91,16 +106,149 @@ die() {
   exit 1
 }
 
+case "$EUROEVAL_GENERATIVE_TYPE" in
+  auto|base|instruction_tuned|reasoning)
+    ;;
+  instruction-tuned)
+    EUROEVAL_GENERATIVE_TYPE="instruction_tuned"
+    ;;
+  *)
+    die "invalid EUROEVAL_GENERATIVE_TYPE=$EUROEVAL_GENERATIVE_TYPE (expected auto|base|instruction_tuned|reasoning)"
+    ;;
+esac
+
+case "$EUROEVAL_CONCURRENCY_MODE" in
+  fixed|adaptive|auto)
+    ;;
+  *)
+    die "invalid EUROEVAL_CONCURRENCY_MODE=$EUROEVAL_CONCURRENCY_MODE (expected fixed|adaptive|auto)"
+    ;;
+esac
+
+ADAPTER_CONFIG_PATH="$MODEL/adapter_config.json"
+ADAPTER_WEIGHTS_PATH="$MODEL/adapter_model.safetensors"
+ADAPTER_CHAT_TEMPLATE_PATH="$MODEL/chat_template.jinja"
+USE_LORA_ADAPTER=0
+LORA_BASE_MODEL=""
+LORA_MODULE_NAME=""
+LORA_MODULE_SPEC=""
+LORA_ADAPTER_PATH="$MODEL"
+LORA_CHAT_TEMPLATE_PATH=""
+LORA_TOKENIZER_PATH=""
+LORA_MAX_RANK="${LORA_MAX_RANK_OVERRIDE:-}"
+VLLM_MODEL_TAG="$MODEL"
+VLLM_SERVED_MODEL_NAME="$SERVED_MODEL_NAME"
+STARTUP_CHECK_MODEL="$EUROEVAL_MODEL"
+
+if [[ -d "$MODEL" && -f "$ADAPTER_CONFIG_PATH" && -f "$ADAPTER_WEIGHTS_PATH" ]]; then
+  adapter_meta="$(
+    ADAPTER_CONFIG_PATH="$ADAPTER_CONFIG_PATH" python3 - <<'PY'
+import json
+import os
+
+p = os.environ["ADAPTER_CONFIG_PATH"]
+with open(p, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+base = str(cfg.get("base_model_name_or_path") or "").strip()
+if not base:
+    raise SystemExit("adapter_config.json missing base_model_name_or_path")
+
+rank = cfg.get("r", 16)
+try:
+    rank = int(rank)
+except Exception as exc:  # noqa: BLE001
+    raise SystemExit(f"invalid adapter rank r={rank!r}") from exc
+
+if rank <= 0:
+    raise SystemExit(f"invalid adapter rank r={rank}")
+
+print(f"{base}\t{rank}")
+PY
+  )" || die "failed to parse adapter metadata from $ADAPTER_CONFIG_PATH"
+
+  IFS=$'\t' read -r LORA_BASE_MODEL LORA_MAX_RANK <<<"$adapter_meta"
+  [[ -n "$LORA_BASE_MODEL" ]] || die "empty base model in $ADAPTER_CONFIG_PATH"
+  [[ -n "$LORA_MAX_RANK" ]] || die "empty adapter rank in $ADAPTER_CONFIG_PATH"
+
+  USE_LORA_ADAPTER=1
+  VLLM_MODEL_TAG="$LORA_BASE_MODEL"
+  VLLM_SERVED_MODEL_NAME="$LORA_BASE_MODEL"
+
+  if [[ "$SERVED_MODEL_NAME" == "$MODEL" ]]; then
+    LORA_MODULE_NAME="$(basename "$MODEL")"
+  else
+    LORA_MODULE_NAME="$SERVED_MODEL_NAME"
+  fi
+  [[ -n "$LORA_MODULE_NAME" ]] || LORA_MODULE_NAME="adapter"
+
+  # Avoid serving base and LoRA with the same model id.
+  if [[ "$LORA_MODULE_NAME" == "$VLLM_SERVED_MODEL_NAME" ]]; then
+    LORA_MODULE_NAME="${LORA_MODULE_NAME}--lora"
+  fi
+
+  if resolved_adapter_path="$(readlink -f "$MODEL" 2>/dev/null)"; then
+    LORA_ADAPTER_PATH="$resolved_adapter_path"
+  fi
+  LORA_MODULE_SPEC="${LORA_MODULE_NAME}=${LORA_ADAPTER_PATH}"
+  if [[ -f "$ADAPTER_CHAT_TEMPLATE_PATH" ]]; then
+    if resolved_chat_template_path="$(readlink -f "$ADAPTER_CHAT_TEMPLATE_PATH" 2>/dev/null)"; then
+      LORA_CHAT_TEMPLATE_PATH="$resolved_chat_template_path"
+    else
+      LORA_CHAT_TEMPLATE_PATH="$ADAPTER_CHAT_TEMPLATE_PATH"
+    fi
+  fi
+
+  # If adapter export contains tokenizer artifacts, force vLLM to use them.
+  if [[ -f "$MODEL/tokenizer_config.json" || -f "$MODEL/tokenizer.json" || -f "$MODEL/tokenizer.model" || -f "$MODEL/vocab.json" ]]; then
+    if resolved_tokenizer_path="$(readlink -f "$MODEL" 2>/dev/null)"; then
+      LORA_TOKENIZER_PATH="$resolved_tokenizer_path"
+    else
+      LORA_TOKENIZER_PATH="$MODEL"
+    fi
+  fi
+
+  # If EUROEVAL_MODEL still points to the adapter path/default served id, map it to the LoRA id.
+  if [[ "$EUROEVAL_MODEL" == "$MODEL" || "$EUROEVAL_MODEL" == "$SERVED_MODEL_NAME" ]]; then
+    EUROEVAL_MODEL="$LORA_MODULE_NAME"
+  fi
+  STARTUP_CHECK_MODEL="$EUROEVAL_MODEL"
+fi
+
+resolve_euroeval_generative_type() {
+  local resolved="${EUROEVAL_GENERATIVE_TYPE}"
+
+  if [[ "$resolved" == "auto" ]]; then
+    case "$EUROEVAL_MODEL" in
+      Qwen/Qwen3*|Qwen/Qwen3.5*|openai/Qwen/Qwen3*|openai/Qwen/Qwen3.5*|openai/Qwen3*|openai/Qwen3.5*)
+        resolved="reasoning"
+        ;;
+    esac
+  fi
+
+  echo "$resolved"
+}
+
 build_euroeval_cli() {
   local -n out_cmd_ref=$1
   local -a euroeval_args
+  local resolved_generative_type
 
   euroeval_args=(
     --model "$EUROEVAL_MODEL"
     --api-base "$EUROEVAL_API_BASE"
     --cache-dir "$EUROEVAL_CACHE_DIR"
     --num-iterations "$EUROEVAL_NUM_ITERATIONS"
+    --concurrency-mode "$EUROEVAL_CONCURRENCY_MODE"
   )
+  if [[ -n "$EUROEVAL_MAX_CONCURRENT_CALLS" ]]; then
+    euroeval_args+=(--max-concurrent-calls "$EUROEVAL_MAX_CONCURRENT_CALLS")
+  fi
+
+  resolved_generative_type="$(resolve_euroeval_generative_type)"
+  if [[ "$resolved_generative_type" != "auto" && -n "$resolved_generative_type" ]]; then
+    euroeval_args+=(--generative-type "$resolved_generative_type")
+  fi
 
   if [[ "$EUROEVAL_RAISE_ERRORS" == "1" ]]; then
     euroeval_args+=(--raise-errors)
@@ -198,11 +346,11 @@ stop_srun() {
 
 [[ -f "$SIF" ]] || die "SIF not found: $SIF"
 [[ -d "$OVERLAY_DIR/venv/vllm-min" ]] || die "overlay venv missing: $OVERLAY_DIR/venv/vllm-min"
-[[ "${SLURM_NNODES:-0}" -ge 2 ]] || die "this script requires at least 2 nodes"
+[[ "${SLURM_NNODES:-0}" -ge 1 ]] || die "this script requires at least 1 node"
 mkdir -p "$EUROEVAL_SLURM_LOG_DIR"
 
 readarray -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
-[[ "${#NODES[@]}" -ge 2 ]] || die "expected 2 nodes, got ${#NODES[@]}"
+[[ "${#NODES[@]}" -ge 1 ]] || die "expected at least 1 node, got ${#NODES[@]}"
 HEAD_NODE="${NODES[0]}"
 
 if [[ -z "$MASTER_ADDR" ]]; then
@@ -212,6 +360,8 @@ fi
 echo "SIF: $SIF"
 echo "Overlay: $OVERLAY_DIR"
 echo "Model: $MODEL"
+echo "vLLM model tag: $VLLM_MODEL_TAG"
+echo "vLLM served model name: $VLLM_SERVED_MODEL_NAME"
 echo "HF_HOME: $HF_HOME"
 echo "Nodes: ${NODES[*]}"
 echo "Head node: $HEAD_NODE"
@@ -233,8 +383,33 @@ echo "EUROEVAL_API_BASE: $EUROEVAL_API_BASE"
 echo "EUROEVAL_LANGUAGES: $EUROEVAL_LANGUAGES"
 echo "EUROEVAL_TASKS: ${EUROEVAL_TASKS:-<all-tasks>}"
 echo "EUROEVAL_NUM_ITERATIONS: $EUROEVAL_NUM_ITERATIONS"
+echo "EUROEVAL_CONCURRENCY_MODE: $EUROEVAL_CONCURRENCY_MODE"
+echo "EUROEVAL_MAX_CONCURRENT_CALLS: $EUROEVAL_MAX_CONCURRENT_CALLS"
+echo "EUROEVAL_GENERATIVE_TYPE: $EUROEVAL_GENERATIVE_TYPE"
+echo "EUROEVAL_GENERATIVE_TYPE_RESOLVED: $(resolve_euroeval_generative_type)"
+echo "STARTUP_CHECK_MODEL: $STARTUP_CHECK_MODEL"
+if [[ -n "$VLLM_SERVER_API_KEY" ]]; then
+  echo "VLLM_SERVER_API_KEY: <set>"
+else
+  echo "VLLM_SERVER_API_KEY: <unset>"
+fi
+echo "USE_LORA_ADAPTER: $USE_LORA_ADAPTER"
+if [[ "$USE_LORA_ADAPTER" == "1" ]]; then
+  echo "LoRA adapter path: $LORA_ADAPTER_PATH"
+  echo "LoRA base model: $LORA_BASE_MODEL"
+  echo "LoRA module id: $LORA_MODULE_NAME"
+  echo "LoRA max rank: $LORA_MAX_RANK"
+  echo "LoRA chat template: ${LORA_CHAT_TEMPLATE_PATH:-<none>}"
+  echo "LoRA tokenizer path: ${LORA_TOKENIZER_PATH:-<none>}"
+fi
 echo "EUROEVAL_CACHE_DIR: $EUROEVAL_CACHE_DIR"
 echo "EUROEVAL_RUN_DIR: $EUROEVAL_RUN_DIR"
+echo "EUROEVAL_EXPORT_EEE: $EUROEVAL_EXPORT_EEE"
+if [[ "$EUROEVAL_EXPORT_EEE" == "1" ]]; then
+  echo "EUROEVAL_EEE_OUTPUT_DIR: $EUROEVAL_EEE_OUTPUT_DIR"
+  echo "EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME: $EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME"
+  echo "EUROEVAL_EEE_EVALUATOR_RELATIONSHIP: $EUROEVAL_EEE_EVALUATOR_RELATIONSHIP"
+fi
 echo "Slurm log dir: $EUROEVAL_SLURM_LOG_DIR"
 echo "Rank log path pattern: $RANK_LOG_PATH"
 
@@ -269,6 +444,9 @@ if [[ -f "$LIBCXI_SO" ]]; then
     -B "$LIBCXI_SO:/usr/lib/libcxi.so.1"
   )
 fi
+if [[ "$USE_LORA_ADAPTER" == "1" && -d "$LORA_ADAPTER_PATH" ]]; then
+  SING_BIND_ARGS+=(-B "$LORA_ADAPTER_PATH:$LORA_ADAPTER_PATH")
+fi
 
 RANK_CMD="$(render_env)"
 RANK_CMD="${RANK_CMD}
@@ -301,7 +479,7 @@ else
 fi
 EXTRA_VLLM_FLAGS=()
 if [[ '$REASONING_PARSER' == 'auto' ]]; then
-  case '$MODEL' in
+  case '$VLLM_MODEL_TAG' in
     Qwen/Qwen3*|Qwen/Qwen3.5*) EXTRA_VLLM_FLAGS+=(--reasoning-parser qwen3) ;;
   esac
 elif [[ -n '$REASONING_PARSER' && '$REASONING_PARSER' != 'none' ]]; then
@@ -316,11 +494,23 @@ fi
 if [[ -n '$TOOL_CALL_PARSER' ]]; then
   EXTRA_VLLM_FLAGS+=(--tool-call-parser '$TOOL_CALL_PARSER')
 fi
+if [[ -n '$VLLM_SERVER_API_KEY' ]]; then
+  EXTRA_VLLM_FLAGS+=(--api-key '$VLLM_SERVER_API_KEY')
+fi
+if [[ '$USE_LORA_ADAPTER' == '1' ]]; then
+  EXTRA_VLLM_FLAGS+=(--enable-lora --lora-modules '$LORA_MODULE_SPEC' --max-lora-rank '$LORA_MAX_RANK')
+  if [[ -n '$LORA_CHAT_TEMPLATE_PATH' ]]; then
+    EXTRA_VLLM_FLAGS+=(--chat-template '$LORA_CHAT_TEMPLATE_PATH')
+  fi
+  if [[ -n '$LORA_TOKENIZER_PATH' ]]; then
+    EXTRA_VLLM_FLAGS+=(--tokenizer '$LORA_TOKENIZER_PATH')
+  fi
+fi
 if [[ \${NODE_RANK} -ne 0 ]]; then
   EXTRA_VLLM_FLAGS+=(--headless)
 fi
-vllm serve '$MODEL' \
-  --served-model-name '$SERVED_MODEL_NAME' \
+vllm serve '$VLLM_MODEL_TAG' \
+  --served-model-name '$VLLM_SERVED_MODEL_NAME' \
   --host 0.0.0.0 \
   --port '$PORT' \
   --dtype bfloat16 \
@@ -351,11 +541,15 @@ srun --overlap \
 SRUN_PID=$!
 
 READY=0
+CURL_AUTH_ARGS=()
+if [[ -n "$VLLM_SERVER_API_KEY" ]]; then
+  CURL_AUTH_ARGS=(-H "Authorization: Bearer $VLLM_SERVER_API_KEY")
+fi
 for ((i=0; i<LAUNCH_TIMEOUT; i+=LAUNCH_STEP)); do
   if ! kill -0 "$SRUN_PID" >/dev/null 2>&1; then
     die "srun exited early; check ${EUROEVAL_SLURM_LOG_DIR}/vllm-q35-mp1-rank-*-${SLURM_JOB_ID_SAFE}.log"
   fi
-  if curl -sf "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+  if curl -sf "${CURL_AUTH_ARGS[@]}" "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
     READY=1
     break
   fi
@@ -364,9 +558,9 @@ done
 [[ "$READY" -eq 1 ]] || die "vLLM server did not become ready"
 echo "Server ready."
 
-curl -sS -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
+curl -sS "${CURL_AUTH_ARGS[@]}" -X POST "http://127.0.0.1:$PORT/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  -d "{\"model\": \"$SERVED_MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Write one short sentence about LUMI.\"}], \"temperature\": 0.2, \"max_tokens\": 64}" \
+  -d "{\"model\": \"$STARTUP_CHECK_MODEL\", \"messages\": [{\"role\": \"user\", \"content\": \"Write one short sentence about LUMI.\"}], \"temperature\": 0.2, \"max_tokens\": 256, \"skip_special_tokens\": false}" \
   > "$COMPLETION_FILE"
 
 COMPLETION_FILE="$COMPLETION_FILE" python3 - <<'PY'
@@ -375,9 +569,17 @@ import os
 p = os.environ["COMPLETION_FILE"]
 with open(p, "r", encoding="utf-8") as f:
     data = json.load(f)
-print("Generated text:")
+print("Startup completion check:")
 if "choices" in data and data["choices"]:
-    print(data["choices"][0]["message"]["content"].strip())
+    message = data["choices"][0].get("message", {})
+    reasoning = (message.get("reasoning") or "").strip()
+    content = (message.get("content") or "").strip()
+    print(f"Reasoning detected: {'yes' if reasoning else 'no'}")
+    if reasoning:
+        print("Reasoning preview:")
+        print(reasoning[:800])
+    print("Content:")
+    print(content)
 else:
     print(json.dumps(data, indent=2))
     raise SystemExit(1)
@@ -391,8 +593,12 @@ if [[ "$RUN_EUROEVAL" == "1" ]]; then
 
   printf -v EUROEVAL_CACHE_DIR_Q '%q' "$EUROEVAL_CACHE_DIR"
   printf -v EUROEVAL_RUN_DIR_Q '%q' "$EUROEVAL_RUN_DIR"
+  printf -v VLLM_SERVER_API_KEY_Q '%q' "$VLLM_SERVER_API_KEY"
   EVAL_CMD="$(render_env)
 export EUROEVAL_ALLOW_FLASH_ATTN=1
+if [[ -n ${VLLM_SERVER_API_KEY_Q} ]]; then
+  export OPENAI_API_KEY=${VLLM_SERVER_API_KEY_Q}
+fi
 mkdir -p ${EUROEVAL_RUN_DIR_Q}
 mkdir -p ${EUROEVAL_CACHE_DIR_Q}
 cd ${EUROEVAL_RUN_DIR_Q}
@@ -403,6 +609,33 @@ ${EUROEVAL_CMD}"
   singularity exec --rocm "${SING_BIND_ARGS[@]}" "$SIF" bash -lc "$EVAL_CMD"
   echo "EuroEval results file: ${EUROEVAL_RUN_DIR}/euroeval_benchmark_results.jsonl"
   echo "EuroEval complete."
+
+  if [[ "$EUROEVAL_EXPORT_EEE" == "1" ]]; then
+    EUROEVAL_RESULTS_FILE="${EUROEVAL_RUN_DIR}/euroeval_benchmark_results.jsonl"
+    printf -v EUROEVAL_RESULTS_FILE_Q '%q' "$EUROEVAL_RESULTS_FILE"
+    printf -v EUROEVAL_EEE_OUTPUT_DIR_Q '%q' "$EUROEVAL_EEE_OUTPUT_DIR"
+    printf -v EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME_Q '%q' "$EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME"
+    printf -v EUROEVAL_EEE_EVALUATOR_RELATIONSHIP_Q '%q' "$EUROEVAL_EEE_EVALUATOR_RELATIONSHIP"
+
+    EXPORT_EEE_CMD="$(render_env)
+command -v evals >/dev/null 2>&1 || { echo 'FATAL: evals not installed in overlay venv'; exit 1; }
+if [[ ! -f ${EUROEVAL_RESULTS_FILE_Q} ]]; then
+  echo 'FATAL: missing EuroEval results file.'
+  exit 1
+fi
+mkdir -p ${EUROEVAL_EEE_OUTPUT_DIR_Q}
+evals eee euroeval \
+  --results-file ${EUROEVAL_RESULTS_FILE_Q} \
+  --output-dir ${EUROEVAL_EEE_OUTPUT_DIR_Q} \
+  --source-organization-name ${EUROEVAL_EEE_SOURCE_ORGANIZATION_NAME_Q} \
+  --evaluator-relationship ${EUROEVAL_EEE_EVALUATOR_RELATIONSHIP_Q}"
+
+    echo "Exporting EuroEval results to every_eval_ever format..."
+    singularity exec --rocm "${SING_BIND_ARGS[@]}" "$SIF" bash -lc "$EXPORT_EEE_CMD"
+    echo "EEE export complete: $EUROEVAL_EEE_OUTPUT_DIR"
+  else
+    echo "EUROEVAL_EXPORT_EEE=0, skipping EEE export."
+  fi
 else
   echo "RUN_EUROEVAL=0, skipping EuroEval."
 fi

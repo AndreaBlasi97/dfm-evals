@@ -10,9 +10,13 @@ BASE_DIR=/pfs/lustref1/appl/local/laifs
 LAIFS_APPL_DIR=/appl/local/laifs
 SIF=${SIF:-$BASE_DIR/containers/lumi-multitorch-u24r64f21m43t29-20260216_093549/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif}
 OVERLAY_DIR=${OVERLAY_DIR:-$REPO_ROOT/overlay_vllm_minimal}
+if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
+  OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
+fi
 
 EVAL_LOG_ROOT_HOST=${EVAL_LOG_ROOT_HOST:-${OVERLAY_LOG_ROOT_HOST:-$REPO_ROOT/logs/evals-logs}}
 EVAL_LOG_ROOT_CONTAINER=${EVAL_LOG_ROOT_CONTAINER:-${OVERLAY_LOG_ROOT_CONTAINER:-$EVAL_LOG_ROOT_HOST}}
+SLURM_LOG_DIR_HOST=${SLURM_LOG_DIR_HOST:-${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}}
 
 VIEW_MODE=start
 if [[ $# -gt 0 ]]; then
@@ -45,7 +49,8 @@ Usage:
 Selector options:
   --all                Use all runs (default, logs/evals-logs)
   --latest             Use latest run dir under eval logs
-  --job-id <id>        Use run dir matching *__job-<id> (fallback: <id>)
+  --job-id <id>        Use run dir matching *__job-<id>, <id>, or
+                       slurm label file *-<id>.out/.err
   --label <run_label>  Use <eval-log-root>/<run_label>
   --log-dir <path>     Use explicit log dir path:
                        - host path under eval log root (auto-mapped)
@@ -68,6 +73,7 @@ Environment overrides:
   VIEW_HOST, VIEW_PORT, VIEW_RECURSIVE
   VIEW_OUTPUT_DIR, VIEW_OVERWRITE
   EVAL_LOG_ROOT_HOST, EVAL_LOG_ROOT_CONTAINER
+  SLURM_LOG_DIR_HOST (used by --job-id fallback resolution)
   OVERLAY_LOG_ROOT_HOST, OVERLAY_LOG_ROOT_CONTAINER (legacy aliases)
   SIF             (override singularity image path)
   OVERLAY_DIR     (override overlay dir)
@@ -144,6 +150,23 @@ run_dir_for_job_id() {
         | head -n 1 \
         | cut -d'|' -f2
     )"
+  fi
+  if [[ -z "$match" && -d "$SLURM_LOG_DIR_HOST" ]]; then
+    local slurm_match
+    slurm_match="$(
+      find "$SLURM_LOG_DIR_HOST" -mindepth 1 -maxdepth 1 -type f \( -name "*-${job_id}.out" -o -name "*-${job_id}.err" \) -printf '%T@|%f\n' \
+        | sort -t'|' -k1,1nr \
+        | head -n 1 \
+        | cut -d'|' -f2
+    )"
+    if [[ -n "$slurm_match" ]]; then
+      local run_label="$slurm_match"
+      run_label="${run_label%-${job_id}.out}"
+      run_label="${run_label%-${job_id}.err}"
+      if [[ -d "$EVAL_LOG_ROOT_HOST/$run_label" ]]; then
+        match="$run_label"
+      fi
+    fi
   fi
   [[ -n "$match" ]] || die "no run directory found for job id $job_id under $EVAL_LOG_ROOT_HOST"
   printf '%s' "$match"
