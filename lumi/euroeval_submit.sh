@@ -38,6 +38,7 @@ EUROEVAL_CONCURRENCY_MODE=${EUROEVAL_CONCURRENCY_MODE:-adaptive}
 EUROEVAL_MAX_CONCURRENT_CALLS=${EUROEVAL_MAX_CONCURRENT_CALLS:-1000}
 EUROEVAL_GENERATIVE_TYPE=${EUROEVAL_GENERATIVE_TYPE:-auto}
 EUROEVAL_EXTRA_ARGS=${EUROEVAL_EXTRA_ARGS:-}
+EUROEVAL_EEE_OUTPUT_DIR=${EUROEVAL_EEE_OUTPUT_DIR:-}
 SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
 TIME_LIMIT=${TIME_LIMIT:-}
 
@@ -66,6 +67,7 @@ Options:
   --max-concurrent-calls <n> EuroEval max concurrent calls (default: 1000)
   --generative-type <type>   EuroEval generative type: auto|base|instruction_tuned|reasoning (default: auto)
   --extra-args <string>      Extra args appended to EuroEval CLI
+  --eee-output-dir <path>    EEE root data dir override (default: ./logs/every_eval_ever/data)
   --time <HH:MM:SS>          Slurm time limit override (default: from sbatch file)
   --slurm-log-dir <path>     Slurm stdout/err directory (default: ./logs/slurm)
   --script <path>            sbatch script path override
@@ -77,6 +79,7 @@ Examples:
   ./lumi/euroeval_submit.sh --languages en,da --iterations 1
   ./lumi/euroeval_submit.sh --concurrency-mode adaptive --max-concurrent-calls 1000
   ./lumi/euroeval_submit.sh --tasks "knowledge,summarization"
+  ./lumi/euroeval_submit.sh --eee-output-dir /path/to/every_eval_ever/data
   ./lumi/euroeval_submit.sh --time 12:00:00
   ./lumi/euroeval_submit.sh --slurm-log-dir /path/to/slurm-logs
   ./lumi/euroeval_submit.sh --no-euroeval
@@ -198,6 +201,11 @@ while [[ $# -gt 0 ]]; do
       EUROEVAL_EXTRA_ARGS="$2"
       shift 2
       ;;
+    --eee-output-dir)
+      need_value "$1" "$#"
+      EUROEVAL_EEE_OUTPUT_DIR="$2"
+      shift 2
+      ;;
     --time)
       need_value "$1" "$#"
       TIME_LIMIT="$2"
@@ -261,6 +269,9 @@ fi
 if [[ -n "$EUROEVAL_EXTRA_ARGS" ]]; then
   env_kv+=("EUROEVAL_EXTRA_ARGS=$EUROEVAL_EXTRA_ARGS")
 fi
+if [[ -n "$EUROEVAL_EEE_OUTPUT_DIR" ]]; then
+  env_kv+=("EUROEVAL_EEE_OUTPUT_DIR=$EUROEVAL_EEE_OUTPUT_DIR")
+fi
 
 echo "Submit script: $SUBMIT_SCRIPT"
 echo "Overlay: $OVERLAY_DIR"
@@ -285,6 +296,9 @@ echo "Slurm stdout path pattern: $slurm_out_path"
 echo "Slurm stderr path pattern: $slurm_err_path"
 if [[ -n "$EUROEVAL_EXTRA_ARGS" ]]; then
   echo "EuroEval extra args: $EUROEVAL_EXTRA_ARGS"
+fi
+if [[ -n "$EUROEVAL_EEE_OUTPUT_DIR" ]]; then
+  echo "EEE output dir override: $EUROEVAL_EEE_OUTPUT_DIR"
 fi
 
 sbatch_args=(--output "$slurm_out_path" --error "$slurm_err_path")

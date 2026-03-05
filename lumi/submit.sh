@@ -58,6 +58,7 @@ JUDGE_ENFORCE_EAGER=${JUDGE_ENFORCE_EAGER:-0}
 JUDGE_CTX_SET=0
 RUN_LABEL=${RUN_LABEL:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
+DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-}
 SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
 DRY_RUN=0
 
@@ -105,6 +106,7 @@ Options:
   --judge-disable-enforce-eager      Disable judge vLLM --enforce-eager (default)
   --run-label <label>        Optional DFM_EVALS_RUN_LABEL override (default: <suite>__<model-slug>__job-<jobid>)
   --extra-args <string>      Extra args appended to evals CLI
+  --eee-output-dir <path>    EEE root data dir override (default: ./logs/every_eval_ever/data)
   --slurm-log-dir <path>     Slurm stdout/err directory (default: ./logs/slurm)
   --script <path>            sbatch script to submit
   --dry-run                  Print sbatch command/env and exit
@@ -118,6 +120,7 @@ Examples:
   ./lumi/submit.sh --target-tool-call-parser qwen3
   ./lumi/submit.sh --model ../../post/outputs/sft-16292768/final --limit 100
   ./lumi/submit.sh --target-model vllm/google/gemma-3-4b-it --judge-model vllm/google/gemma-3-4b-it
+  ./lumi/submit.sh --eee-output-dir /path/to/every_eval_ever/data
   ./lumi/submit.sh --slurm-log-dir /path/to/slurm-logs
   ./lumi/submit.sh --run-label fundamentals_gemma64c --dry-run
 EOF
@@ -354,6 +357,11 @@ while [[ $# -gt 0 ]]; do
       EXTRA_ARGS="$2"
       shift 2
       ;;
+    --eee-output-dir)
+      need_value "$1" "$#"
+      DFM_EVALS_EEE_OUTPUT_DIR="$2"
+      shift 2
+      ;;
     --slurm-log-dir)
       need_value "$1" "$#"
       SLURM_LOG_DIR="$2"
@@ -498,6 +506,9 @@ fi
 if [[ -n "$EXTRA_ARGS" ]]; then
   env_kv+=("DFM_EVALS_EXTRA_ARGS=$EXTRA_ARGS")
 fi
+if [[ -n "$DFM_EVALS_EEE_OUTPUT_DIR" ]]; then
+  env_kv+=("DFM_EVALS_EEE_OUTPUT_DIR=$DFM_EVALS_EEE_OUTPUT_DIR")
+fi
 if [[ -n "$TARGET_VISIBLE_DEVICES" ]]; then
   env_kv+=("TARGET_VISIBLE_DEVICES=$TARGET_VISIBLE_DEVICES")
 fi
@@ -553,6 +564,9 @@ else
 fi
 if [[ -n "$EXTRA_ARGS" ]]; then
   echo "Extra args: $EXTRA_ARGS"
+fi
+if [[ -n "$DFM_EVALS_EEE_OUTPUT_DIR" ]]; then
+  echo "EEE output dir override: $DFM_EVALS_EEE_OUTPUT_DIR"
 fi
 if [[ -n "$OPENAI_BASE_URL_OVERRIDE" ]]; then
   echo "OpenAI base URL override: $OPENAI_BASE_URL_OVERRIDE"
