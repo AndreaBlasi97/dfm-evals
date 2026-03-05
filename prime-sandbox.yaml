@@ -1,0 +1,11 @@
+docker_image: python:3.11-slim
+cpu_cores: 1
+memory_gb: 2
+disk_size_gb: 5
+timeout_minutes: 10
+working_dir: /workspace
+network_access: true
+wait_for_creation: true
+wait_max_attempts: 180
+wait_stability_checks: 1
+metadata_env_prefix: SAMPLE_METADATA_

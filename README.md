@@ -53,6 +53,80 @@ uv run evals eee inspect --log-path logs/evals-logs/<run_label> --output-dir out
 uv run evals eee euroeval --results-file /path/to/euroeval_benchmark_results.jsonl --output-dir out/eee
 ```
 
+Prime Sandbox provider (Inspect `--sandbox prime`):
+
+```bash
+PRIME_API_KEY=... \
+uv run evals run dfm_evals/multi_wiki_qa \
+  --model openai/gpt-5-mini \
+  --sandbox prime
+```
+
+With explicit config file:
+
+```bash
+PRIME_API_KEY=... \
+uv run evals run dfm_evals/multi_wiki_qa \
+  --model openai/gpt-5-mini \
+  --sandbox "prime:$(pwd)/prime-sandbox.yaml"
+```
+
+Example `prime-sandbox.yaml`:
+
+```yaml
+docker_image: python:3.11-slim
+cpu_cores: 2
+memory_gb: 4
+disk_size_gb: 10
+timeout_minutes: 120
+working_dir: /workspace
+metadata_env_prefix: SAMPLE_METADATA_
+```
+
+Cleanup stale Inspect-created Prime sandboxes:
+
+```bash
+uv run inspect sandbox cleanup prime
+```
+
+Modal Sandbox provider (Inspect `--sandbox modal`):
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... \
+uv run evals run dfm_evals/multi_wiki_qa \
+  --model openai/gpt-5-mini \
+  --sandbox modal
+```
+
+With explicit config file:
+
+```bash
+MODAL_TOKEN_ID=... MODAL_TOKEN_SECRET=... \
+uv run evals run dfm_evals/multi_wiki_qa \
+  --model openai/gpt-5-mini \
+  --sandbox "modal:$(pwd)/modal-sandbox.yaml"
+```
+
+Example `modal-sandbox.yaml`:
+
+```yaml
+app_name: inspect-sandboxes
+image: python:3.11-slim
+startup_command: tail -f /dev/null
+working_dir: /workspace
+cpu_cores: 1
+memory_mb: 2048
+timeout_seconds: 3600
+wait_for_start: true
+wait_timeout_seconds: 900
+```
+
+Cleanup stale Inspect-created Modal sandboxes:
+
+```bash
+uv run inspect sandbox cleanup modal
+```
+
 Suites default to the packaged file at `dfm_evals/eval-sets.yaml`.
 Use `--file <path>` for custom suite files.
 Packaged suites are provider-agnostic.
