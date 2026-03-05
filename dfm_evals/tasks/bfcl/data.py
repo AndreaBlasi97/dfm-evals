@@ -8,9 +8,10 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, Field, model_validator
+from typing_extensions import TypedDict
 
 from dfm_evals.tasks.bfcl.utils import CATEGORIES
 
