@@ -394,7 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     eee_inspect_parser.add_argument(
         "--output-dir",
-        default="every_eval_ever",
+        default="every_eval_ever/data",
         help="Output directory root for converted JSON files",
     )
     eee_inspect_parser.add_argument(
@@ -428,6 +428,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Optional evaluation library version override",
     )
+    eee_inspect_parser.add_argument(
+        "--inference-base-url",
+        default=None,
+        help="Optional inference API base URL to record in exported metadata",
+    )
+    eee_inspect_parser.add_argument(
+        "--inference-provider-name",
+        default=None,
+        help="Optional provider label to record in exported metadata",
+    )
 
     eee_euroeval_parser = eee_subparsers.add_parser(
         "euroeval",
@@ -440,7 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     eee_euroeval_parser.add_argument(
         "--output-dir",
-        default="every_eval_ever",
+        default="every_eval_ever/data",
         help="Output directory root for converted JSON files",
     )
     eee_euroeval_parser.add_argument(
@@ -473,6 +483,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--eval-library-version",
         default=None,
         help="Optional evaluation library version override",
+    )
+    eee_euroeval_parser.add_argument(
+        "--inference-base-url",
+        default=None,
+        help="Optional inference API base URL to record in exported metadata",
+    )
+    eee_euroeval_parser.add_argument(
+        "--inference-provider-name",
+        default=None,
+        help="Optional provider label to record in exported metadata",
     )
 
     argv_list = list(argv) if argv is not None else sys.argv[1:]
@@ -580,6 +600,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     source_organization_logo_url=args.source_organization_logo_url,
                     eval_library_name=args.eval_library_name,
                     eval_library_version=args.eval_library_version,
+                    inference_base_url=args.inference_base_url,
+                    inference_provider_name=args.inference_provider_name,
                 )
             elif args.eee_command == "euroeval":
                 written = export_euroeval_results(
@@ -591,6 +613,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     source_organization_logo_url=args.source_organization_logo_url,
                     eval_library_name=args.eval_library_name,
                     eval_library_version=args.eval_library_version,
+                    inference_base_url=args.inference_base_url,
+                    inference_provider_name=args.inference_provider_name,
                 )
             else:
                 parser.error(f"unsupported eee subcommand: {args.eee_command}")

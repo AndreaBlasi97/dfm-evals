@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -125,6 +126,160 @@ def _sanitize_path_component(value: str) -> str:
             cleaned.append("_")
     result = "".join(cleaned).strip("._-")
     return result or "unknown"
+
+
+def _model_label_from_ref(model_ref: str) -> str:
+    ref = (model_ref or "").strip()
+    if not ref:
+        return "model"
+
+    if ref.startswith("vllm/"):
+        ref = ref[len("vllm/") :]
+    if ref.startswith("openai/"):
+        ref = ref[len("openai/") :]
+
+    if "/" in ref:
+        base_name = Path(ref).name
+        parent_name = Path(ref).parent.name
+        if (
+            base_name in {"final", "latest", "last"}
+            or base_name.startswith("checkpoint-")
+            or base_name.startswith("step-")
+            or base_name.startswith("epoch-")
+        ):
+            if parent_name and parent_name not in {".", "/"}:
+                label = f"{parent_name}-{base_name}"
+            else:
+                label = base_name
+        else:
+            label = base_name
+    else:
+        label = ref
+
+    cleaned = []
+    for char in label:
+        if char.isalnum() or char in "._-":
+            cleaned.append(char)
+        else:
+            cleaned.append("_")
+    result = "".join(cleaned).strip("._-")
+    return result or "model"
+
+
+def _extract_lora_context_from_server_logs(eval_log_path: Path) -> dict[str, str] | None:
+    server_dir = eval_log_path.parent / "_vllm_server"
+    if not server_dir.is_dir():
+        return None
+
+    try:
+        log_files = sorted(server_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+
+    lora_module_pattern = re.compile(r"LoRAModulePath\(name='([^']+)', path='([^']+)'")
+    model_tag_pattern = re.compile(r"'model_tag': '([^']+)'")
+    served_model_pattern = re.compile(r"'served_model_name': \['([^']+)'\]")
+
+    for log_file in log_files:
+        try:
+            with log_file.open("r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if "LoRAModulePath(" not in line:
+                        continue
+
+                    module_match = lora_module_pattern.search(line)
+                    if module_match is None:
+                        continue
+
+                    context: dict[str, str] = {
+                        "lora_module_name": module_match.group(1).strip(),
+                        "lora_adapter_path": module_match.group(2).strip(),
+                        "server_log_path": str(log_file),
+                    }
+
+                    model_tag_match = model_tag_pattern.search(line)
+                    if model_tag_match is not None:
+                        context["lora_base_model"] = model_tag_match.group(1).strip()
+
+                    served_model_match = served_model_pattern.search(line)
+                    if served_model_match is not None:
+                        context["served_model_name"] = served_model_match.group(1).strip()
+
+                    return context
+        except OSError:
+            continue
+
+    return None
+
+
+def _infer_lora_model_ref(
+    *,
+    model_ref: str,
+    sample_output_model_ref: str | None,
+    lora_context: Mapping[str, str] | None,
+) -> tuple[str, bool]:
+    if not lora_context:
+        return model_ref, False
+
+    if not model_ref.startswith("vllm/"):
+        return model_ref, False
+
+    adapter_path = str(lora_context.get("lora_adapter_path", "")).strip()
+    if not adapter_path:
+        return model_ref, False
+
+    suffix = model_ref[len("vllm/") :]
+    sample_model = (sample_output_model_ref or "").strip()
+    module_name = str(lora_context.get("lora_module_name", "")).strip()
+    base_model = str(lora_context.get("lora_base_model", "")).strip()
+
+    should_infer = False
+    if sample_model and suffix == sample_model:
+        should_infer = True
+    elif module_name and base_model and module_name == base_model and suffix == module_name:
+        should_infer = True
+
+    if not should_infer:
+        return model_ref, False
+
+    adapter_label = _model_label_from_ref(adapter_path)
+    if not adapter_label:
+        return model_ref, False
+
+    developer = "unknown"
+    if "/" in suffix:
+        developer = suffix.split("/", 1)[0]
+
+    if developer and developer != "unknown":
+        inferred = f"vllm/{developer}/{adapter_label}"
+    else:
+        inferred = f"vllm/{adapter_label}"
+
+    if inferred == model_ref:
+        return model_ref, False
+    return inferred, True
+
+
+def _merge_generation_additional_details(
+    generation_config: Mapping[str, Any] | None,
+    *,
+    extra_details: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    details = {str(k): str(v) for k, v in (extra_details or {}).items() if v is not None}
+    if not generation_config and not details:
+        return None
+
+    merged: dict[str, Any] = {}
+    if generation_config:
+        merged.update(dict(generation_config))
+
+    existing_details = _as_mapping(merged.get("additional_details"))
+    existing_details.update(details)
+
+    if existing_details:
+        merged["additional_details"] = existing_details
+
+    return _compact(merged)
 
 
 def _split_model_id(model_id: str) -> tuple[str, str]:
@@ -489,7 +644,14 @@ def _extract_error(sample: Any) -> str | None:
 def _extract_metadata(sample: Any) -> dict[str, str] | None:
     metadata: dict[str, str] = {}
     output = getattr(sample, "output", None)
-    stop_reason = getattr(output, "stop_reason", None)
+    stop_reason: Any = None
+    if output is not None:
+        try:
+            stop_reason = getattr(output, "stop_reason", None)
+        except IndexError:
+            # Some Inspect logs can have an output object with zero choices.
+            # Treat stop reason as unknown instead of failing export.
+            stop_reason = None
     if stop_reason is not None:
         metadata["stop_reason"] = str(stop_reason)
     epoch = getattr(sample, "epoch", None)
@@ -673,7 +835,32 @@ def _extract_inspect_source_data(dataset: Any, task_name: str) -> tuple[str, dic
     return dataset_name, _compact(source_data)
 
 
-def _extract_inspect_generation_config(eval_spec: Any) -> dict[str, Any] | None:
+def _extract_inspect_inference_base_url(eval_spec: Any) -> str | None:
+    model_base_url = getattr(eval_spec, "model_base_url", None)
+    if isinstance(model_base_url, str) and model_base_url.strip():
+        return model_base_url.strip()
+
+    model_args = _as_mapping(getattr(eval_spec, "model_args", None))
+    for key in ("base_url", "model_base_url", "api_base", "endpoint", "openai_base_url"):
+        value = model_args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    generate_cfg = _as_mapping(getattr(eval_spec, "model_generate_config", None))
+    for key in ("base_url", "api_base", "openai_base_url"):
+        value = generate_cfg.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return None
+
+
+def _extract_inspect_generation_config(
+    eval_spec: Any,
+    *,
+    inference_base_url: str | None = None,
+    inference_provider_name: str | None = None,
+) -> dict[str, Any] | None:
     generate_cfg = _as_mapping(getattr(eval_spec, "model_generate_config", None))
     task_args = _as_mapping(getattr(eval_spec, "task_args", None))
     limits_cfg = _as_mapping(getattr(eval_spec, "config", None))
@@ -725,6 +912,13 @@ def _extract_inspect_generation_config(eval_spec: Any) -> dict[str, Any] | None:
         additional_details["eval_config"] = json.dumps(
             limits_cfg, ensure_ascii=False, sort_keys=True, default=str
         )
+    if inference_base_url:
+        additional_details["inference_base_url"] = inference_base_url
+        parsed_base = urlparse(inference_base_url)
+        if parsed_base.hostname:
+            additional_details["inference_host"] = parsed_base.hostname
+    if inference_provider_name:
+        additional_details["inference_provider_name"] = inference_provider_name
 
     if not generation_args and not additional_details:
         return None
@@ -844,6 +1038,8 @@ def export_inspect_logs(
     source_organization_logo_url: str | None = None,
     eval_library_name: str = "inspect_ai",
     eval_library_version: str | None = None,
+    inference_base_url: str | None = None,
+    inference_provider_name: str | None = None,
 ) -> list[Path]:
     try:
         from inspect_ai.log import list_eval_logs, read_eval_log
@@ -885,6 +1081,7 @@ def export_inspect_logs(
 
     unique_candidates = list(dict.fromkeys(candidates))
     written: list[Path] = []
+    lora_context_cache: dict[Path, dict[str, str] | None] = {}
     for candidate in unique_candidates:
         try:
             eval_log = read_eval_log(str(candidate), header_only=False)
@@ -910,25 +1107,63 @@ def export_inspect_logs(
         )
         retrieved_timestamp = _now_unix_timestamp()
 
-        model_ref = str(getattr(eval_spec, "model", "unknown_model"))
+        model_ref = str(getattr(eval_spec, "model", "unknown_model")).strip() or "unknown_model"
+        configured_model_ref = model_ref
         samples = list(getattr(eval_log, "samples", []) or [])
+        detailed_model_ref: str | None = None
         if samples:
             first_sample_output = getattr(samples[0], "output", None)
-            detailed_model_ref = getattr(first_sample_output, "model", None)
-            if isinstance(detailed_model_ref, str) and detailed_model_ref.strip():
-                if "/" in model_ref:
-                    provider, model_name = model_ref.split("/", 1)
-                    if model_name != detailed_model_ref:
-                        model_ref = f"{provider}/{detailed_model_ref}"
-                else:
+            detailed_model_value = getattr(first_sample_output, "model", None)
+            if isinstance(detailed_model_value, str) and detailed_model_value.strip():
+                detailed_model_ref = detailed_model_value.strip()
+                # Keep explicitly qualified eval.model (e.g., vllm/<adapter>) as
+                # authoritative. sample.output.model can reflect the base model.
+                if model_ref == "unknown_model" or "/" not in model_ref:
                     model_ref = detailed_model_ref
+
+        run_dir = candidate.parent.resolve()
+        if run_dir not in lora_context_cache:
+            lora_context_cache[run_dir] = _extract_lora_context_from_server_logs(candidate)
+        lora_context = lora_context_cache[run_dir]
+        model_ref, lora_model_ref_inferred = _infer_lora_model_ref(
+            model_ref=model_ref,
+            sample_output_model_ref=detailed_model_ref,
+            lora_context=lora_context,
+        )
 
         packages = _as_mapping(getattr(eval_spec, "packages", None))
         inspect_version = str(packages.get("inspect_ai", "unknown"))
         library_version = eval_library_version or inspect_version
 
         model_info = _parse_model_info(model_ref)
-        generation_config = _extract_inspect_generation_config(eval_spec)
+        resolved_inference_base_url = (
+            inference_base_url or _extract_inspect_inference_base_url(eval_spec)
+        )
+        generation_config = _extract_inspect_generation_config(
+            eval_spec,
+            inference_base_url=resolved_inference_base_url,
+            inference_provider_name=inference_provider_name,
+        )
+        generation_extra_details: dict[str, Any] = {}
+        if configured_model_ref:
+            generation_extra_details["configured_model_ref"] = configured_model_ref
+        if detailed_model_ref:
+            generation_extra_details["sample_output_model_ref"] = detailed_model_ref
+        if lora_context:
+            generation_extra_details.update(
+                {
+                    "lora_module_name": lora_context.get("lora_module_name"),
+                    "lora_base_model": lora_context.get("lora_base_model"),
+                    "lora_adapter_path": lora_context.get("lora_adapter_path"),
+                    "lora_server_log_path": lora_context.get("server_log_path"),
+                }
+            )
+        if lora_model_ref_inferred:
+            generation_extra_details["model_ref_inferred_from_lora"] = "true"
+        generation_config = _merge_generation_additional_details(
+            generation_config,
+            extra_details=generation_extra_details,
+        )
         evaluation_results = _extract_inspect_results(
             eval_log=eval_log,
             task_name=task_name,
@@ -997,7 +1232,12 @@ def export_inspect_logs(
     return written
 
 
-def _extract_euroeval_generation_config(entry: Mapping[str, Any]) -> dict[str, Any] | None:
+def _extract_euroeval_generation_config(
+    entry: Mapping[str, Any],
+    *,
+    inference_base_url: str | None = None,
+    inference_provider_name: str | None = None,
+) -> dict[str, Any] | None:
     details: dict[str, str] = {}
     detail_fields = (
         "task",
@@ -1022,6 +1262,13 @@ def _extract_euroeval_generation_config(entry: Mapping[str, Any]) -> dict[str, A
     languages = entry.get("languages")
     if isinstance(languages, list):
         details["languages"] = ",".join(str(language) for language in languages)
+    if inference_base_url:
+        details["inference_base_url"] = inference_base_url
+        parsed_base = urlparse(inference_base_url)
+        if parsed_base.hostname:
+            details["inference_host"] = parsed_base.hostname
+    if inference_provider_name:
+        details["inference_provider_name"] = inference_provider_name
 
     if not details:
         return None
@@ -1117,6 +1364,8 @@ def export_euroeval_results(
     source_organization_logo_url: str | None = None,
     eval_library_name: str = "euroeval",
     eval_library_version: str | None = None,
+    inference_base_url: str | None = None,
+    inference_provider_name: str | None = None,
 ) -> list[Path]:
     results_path = Path(results_file)
     if not results_path.is_file():
@@ -1172,7 +1421,11 @@ def export_euroeval_results(
         )
         model_info = _parse_model_info(model_ref, fallback_vllm_version=vllm_version)
 
-        generation_config = _extract_euroeval_generation_config(entry)
+        generation_config = _extract_euroeval_generation_config(
+            entry,
+            inference_base_url=inference_base_url,
+            inference_provider_name=inference_provider_name,
+        )
         evaluation_results = _extract_euroeval_results(
             entry=entry,
             source_data=source_data,
