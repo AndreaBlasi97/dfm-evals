@@ -8,7 +8,7 @@ from inspect_ai.scorer import Score
 from pydantic import BaseModel, Field
 
 from . import _run_state as run_state
-from ._resolve import resolve_tournament_config
+from ._resolve import resolve_stateful_tournament_config
 from .config import TournamentConfig, load_tournament_config
 from .generation import run_generation
 from .indexer import ResponseIndexReport, index_generation_responses
@@ -82,6 +82,23 @@ class AddModelsResult(BaseModel):
         return self.run.status
 
 
+class RegisterModelsResult(BaseModel):
+    """Result of registering new models without generating or judging."""
+
+    requested_models: list[str]
+    added_models: list[str]
+    already_present_models: list[str]
+    status: TournamentStatus
+
+
+class UpdateConfigResult(BaseModel):
+    """Result of updating persisted tournament config for an existing run."""
+
+    old_max_total_matches: int
+    new_max_total_matches: int
+    status: TournamentStatus
+
+
 def run_tournament(
     config: TournamentConfig | Mapping[str, Any] | str | Path,
     *,
@@ -105,7 +122,7 @@ def resume_tournament(
     max_batches: int | None = None,
 ) -> TournamentRunResult:
     """Resume a tournament from config or existing state directory."""
-    parsed = resolve_tournament_config(config_or_state)
+    parsed = resolve_stateful_tournament_config(config_or_state)
     state_dir = _require_state_dir(parsed)
     with TournamentStore(state_dir) as store:
         store.initialize_from_config(parsed)
@@ -121,11 +138,129 @@ def add_models(
     max_batches: int | None = None,
 ) -> AddModelsResult:
     """Add models to an existing tournament and continue the run loop."""
+    requested_models, _parsed, updated_config, already_present, _new_models = _register_models(
+        config_or_state,
+        models=models,
+    )
+    state_dir = _require_state_dir(updated_config)
+    with TournamentStore(state_dir) as store:
+        store.initialize_from_config(updated_config)
+        _set_run_state_defaults(store, updated_config)
+
+        coverage_before = index_generation_responses(updated_config, store=store)
+        generated_models = sorted(
+            model_name
+            for model_name, prompt_ids in coverage_before.missing_by_model.items()
+            if len(prompt_ids) > 0
+        )
+        _ensure_response_coverage(updated_config, store, force_regenerate=False)
+
+        run = _run_loop(updated_config, store, max_batches=max_batches)
+        return AddModelsResult(
+            requested_models=requested_models,
+            added_models=[name for name in requested_models if name not in already_present],
+            already_present_models=already_present,
+            generated_models=generated_models,
+            run=run,
+        )
+
+
+def register_models(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    models: Sequence[str],
+) -> RegisterModelsResult:
+    """Register new models in persisted tournament state without generation/judging."""
+    requested_models, _parsed, updated_config, already_present, new_models = _register_models(
+        config_or_state,
+        models=models,
+    )
+    state_dir = _require_state_dir(updated_config)
+    with TournamentStore(state_dir) as store:
+        store.initialize_from_config(updated_config)
+        _set_run_state_defaults(store, updated_config)
+        index_generation_responses(updated_config, store=store)
+        status = _status_from_store(updated_config, store)
+
+    return RegisterModelsResult(
+        requested_models=requested_models,
+        added_models=new_models,
+        already_present_models=already_present,
+        status=status,
+    )
+
+
+def tournament_status(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+) -> TournamentStatus:
+    """Report current tournament status."""
+    parsed = resolve_stateful_tournament_config(config_or_state)
+    state_dir = _require_state_dir(parsed)
+    with TournamentStore(state_dir) as store:
+        return _status_from_store(parsed, store)
+
+
+def update_tournament_config(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    max_total_matches: int | None = None,
+) -> UpdateConfigResult:
+    """Update persisted tournament config for an existing run."""
+    if max_total_matches is None:
+        raise ValueError("At least one config field update is required.")
+    if max_total_matches <= 0:
+        raise ValueError("max_total_matches must be greater than 0.")
+
+    parsed = resolve_stateful_tournament_config(config_or_state)
+    state_dir = _require_state_dir(parsed)
+    with TournamentStore(state_dir) as store:
+        persisted_config = _stored_config(store)
+        base_config = persisted_config if persisted_config is not None else parsed
+        store.initialize_from_config(base_config)
+        _set_run_state_defaults(store, base_config)
+
+        updated_config = base_config.model_copy(
+            update={"max_total_matches": max_total_matches}
+        )
+        store.initialize_from_config(updated_config)
+
+        total_matches = store.table_count("matches")
+        state = run_state.load(store, run_status_default=RUN_STATUS_RUNNING)
+        updated_stop_reasons = [
+            reason
+            for reason in state.stop_reasons
+            if not (
+                reason == "max_total_matches_reached"
+                and total_matches < updated_config.max_total_matches
+            )
+        ]
+
+        with store.transaction():
+            run_state.set_config_json(store, updated_config.model_dump_json(), commit=False)
+            if updated_stop_reasons != state.stop_reasons:
+                run_state.set_stop_reasons(store, updated_stop_reasons, commit=False)
+                if len(updated_stop_reasons) == 0 and state.run_status != RUN_STATUS_RUNNING:
+                    run_state.set_run_status(store, RUN_STATUS_RUNNING, commit=False)
+
+        status = _status_from_store(updated_config, store)
+
+    return UpdateConfigResult(
+        old_max_total_matches=base_config.max_total_matches,
+        new_max_total_matches=updated_config.max_total_matches,
+        status=status,
+    )
+
+
+def _register_models(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    models: Sequence[str],
+) -> tuple[list[str], TournamentConfig, TournamentConfig, list[str], list[str]]:
     requested_models = _normalize_model_names(models)
     if len(requested_models) == 0:
         raise ValueError("At least one non-empty model name is required.")
 
-    parsed = resolve_tournament_config(config_or_state)
+    parsed = resolve_stateful_tournament_config(config_or_state)
     state_dir = _require_state_dir(parsed)
     with TournamentStore(state_dir) as store:
         persisted_config = _stored_config(store)
@@ -136,14 +271,19 @@ def add_models(
         existing_models = set(base_config.contestant_models)
         already_present = [name for name in requested_models if name in existing_models]
         new_models = [name for name in requested_models if name not in existing_models]
-
+        scaled_max_total_matches = _scaled_max_total_matches(
+            current_max=base_config.max_total_matches,
+            existing_model_count=len(base_config.contestant_models),
+            added_model_count=len(new_models),
+        )
         updated_config = (
             base_config.model_copy(
                 update={
                     "contestant_models": [
                         *base_config.contestant_models,
                         *new_models,
-                    ]
+                    ],
+                    "max_total_matches": scaled_max_total_matches,
                 }
             )
             if len(new_models) > 0
@@ -158,32 +298,7 @@ def add_models(
             run_state.set_converged(store, False, commit=False)
             run_state.set_stop_reasons(store, [], commit=False)
 
-        coverage_before = index_generation_responses(updated_config, store=store)
-        generated_models = sorted(
-            model_name
-            for model_name, prompt_ids in coverage_before.missing_by_model.items()
-            if len(prompt_ids) > 0
-        )
-        _ensure_response_coverage(updated_config, store, force_regenerate=False)
-
-        run = _run_loop(updated_config, store, max_batches=max_batches)
-        return AddModelsResult(
-            requested_models=requested_models,
-            added_models=new_models,
-            already_present_models=already_present,
-            generated_models=generated_models,
-            run=run,
-        )
-
-
-def tournament_status(
-    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
-) -> TournamentStatus:
-    """Report current tournament status."""
-    parsed = resolve_tournament_config(config_or_state)
-    state_dir = _require_state_dir(parsed)
-    with TournamentStore(state_dir) as store:
-        return _status_from_store(parsed, store)
+    return requested_models, parsed, updated_config, already_present, new_models
 
 
 def _stored_config(store: TournamentStore) -> TournamentConfig | None:
@@ -208,6 +323,24 @@ def _normalize_model_names(models: Sequence[str]) -> list[str]:
         seen.add(value)
         normalized.append(value)
     return normalized
+
+
+def _scaled_max_total_matches(
+    *,
+    current_max: int,
+    existing_model_count: int,
+    added_model_count: int,
+) -> int:
+    if added_model_count <= 0:
+        return current_max
+
+    old_pair_count = existing_model_count * (existing_model_count - 1) // 2
+    new_model_count = existing_model_count + added_model_count
+    new_pair_count = new_model_count * (new_model_count - 1) // 2
+    if old_pair_count <= 0 or new_pair_count <= old_pair_count:
+        return current_max
+
+    return (current_max * new_pair_count + old_pair_count - 1) // old_pair_count
 
 
 def _set_run_state_defaults(store: TournamentStore, config: TournamentConfig) -> None:
@@ -388,7 +521,7 @@ def _judge_pending_matches(
         judge_result = run_judge_batch(
             config,
             chunk,
-            log_dir=config.log_dir / "judge",
+            log_dir=config.judge_log_dir,
         )
         _ingest_judge_logs(config, store, judge_result.logs)
 
@@ -409,7 +542,7 @@ def _ingest_judge_logs(
 ) -> None:
     with store.transaction():
         for log in logs:
-            source_log = _relative_log_name(config.log_dir / "judge", log.location)
+            source_log = _relative_log_name(config.judge_log_dir, log.location)
             for sample in (log.samples or []):
                 parsed = _parse_judged_sample(sample)
                 if parsed is None:
@@ -698,6 +831,4 @@ def _chunked(items: Sequence[JudgeMatch], *, size: int) -> Sequence[Sequence[Jud
 
 
 def _require_state_dir(config: TournamentConfig) -> Path:
-    if config.state_dir is None:
-        raise ValueError("state_dir is required")
     return config.state_dir

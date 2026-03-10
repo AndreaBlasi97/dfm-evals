@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from inspect_ai.log import (
+    EvalLog,
     EvalSample,
     list_eval_logs,
     read_eval_log,
@@ -9,6 +10,13 @@ from inspect_ai.log import (
 )
 from pydantic import BaseModel
 
+from ._provenance import (
+    GENERATION_PHASE,
+    GENERATION_TASK_NAME,
+    TOURNAMENT_PHASE_KEY,
+    TOURNAMENT_PROJECT_KEY,
+    resolve_tournament_project_id,
+)
 from .config import TournamentConfig, load_tournament_config
 from .store import TournamentStore
 from .types import response_id
@@ -19,6 +27,8 @@ class ResponseIndexReport(BaseModel):
 
     logs_seen: int = 0
     logs_processed: int = 0
+    logs_skipped_model: int = 0
+    logs_skipped_provenance: int = 0
     samples_seen: int = 0
     responses_indexed: int = 0
     responses_inserted: int = 0
@@ -39,9 +49,6 @@ def index_generation_responses(
 ) -> ResponseIndexReport:
     """Index generation logs into tournament response state."""
     parsed = load_tournament_config(config)
-    if parsed.state_dir is None:
-        raise ValueError("state_dir is required")
-
     if store is not None:
         return _index_generation_responses(parsed, store)
 
@@ -55,21 +62,31 @@ def _index_generation_responses(
 ) -> ResponseIndexReport:
     store.initialize_from_config(config)
 
+    expected_project_id = resolve_tournament_project_id(config, store=store)
     expected_models = set(config.contestant_models)
     expected_prompt_ids = [prompt.id for prompt in config.prompts]
     expected_prompt_set = set(expected_prompt_ids)
     report = ResponseIndexReport(missing_by_model={})
 
     with store.transaction():
-        for log_info in list_eval_logs(config.completion_log_dir.as_posix()):
+        for log_info in list_eval_logs(config.generation_log_dir.as_posix()):
             report.logs_seen += 1
             try:
                 header = read_eval_log(log_info, header_only=True)
+                if not _matches_generation_provenance(
+                    header,
+                    expected_project_id=expected_project_id,
+                ):
+                    report.logs_skipped_provenance += 1
+                    continue
+
                 model_name = header.eval.model
                 if model_name not in expected_models:
+                    report.logs_skipped_model += 1
                     continue
                 model_identifier = store.model_identifier(model_name)
                 if model_identifier is None:
+                    report.logs_skipped_model += 1
                     continue
 
                 report.logs_processed += 1
@@ -84,13 +101,23 @@ def _index_generation_responses(
                         continue
 
                     inserted = store.upsert_response(
-                        response_id=response_id(model_identifier, prompt_id),
+                        response_id=response_id(
+                            model_identifier,
+                            prompt_id,
+                            source_log=_relative_log_name(
+                                config.generation_log_dir, log_info.name
+                            ),
+                            sample_uuid=sample.uuid,
+                            sample_id=str(sample.id),
+                            response_text=sample.output.completion,
+                        ),
                         model_id=model_identifier,
                         prompt_id=prompt_id,
                         response_text=sample.output.completion,
                         source_log=_relative_log_name(
-                            config.completion_log_dir, log_info.name
+                            config.generation_log_dir, log_info.name
                         ),
+                        source_log_mtime=log_info.mtime,
                         sample_id=str(sample.id),
                         sample_uuid=sample.uuid,
                         commit=False,
@@ -105,6 +132,25 @@ def _index_generation_responses(
         config.contestant_models, expected_prompt_ids
     )
     return report
+
+
+def _matches_generation_provenance(
+    log: EvalLog,
+    *,
+    expected_project_id: str,
+) -> bool:
+    eval_spec = log.eval
+    if eval_spec.task != GENERATION_TASK_NAME:
+        return False
+
+    metadata = eval_spec.metadata
+    if not isinstance(metadata, dict):
+        return False
+
+    return (
+        metadata.get(TOURNAMENT_PHASE_KEY) == GENERATION_PHASE
+        and metadata.get(TOURNAMENT_PROJECT_KEY) == expected_project_id
+    )
 
 
 def _resolve_prompt_id(sample: EvalSample, prompt_id_field: str) -> str | None:

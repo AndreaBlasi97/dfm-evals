@@ -17,12 +17,16 @@ from .judge_task import (
 )
 from .orchestrator import (
     AddModelsResult,
+    RegisterModelsResult,
     TournamentRunResult,
     TournamentStatus,
+    UpdateConfigResult,
     add_models,
+    register_models,
     resume_tournament,
     run_tournament,
     tournament_status,
+    update_tournament_config,
 )
 from .rating import (
     MatchOutcome,
@@ -67,6 +71,12 @@ from .types import (
     model_id,
     response_id,
 )
+from .viewer import (
+    TournamentViewDataSource,
+    TournamentViewServer,
+    create_tournament_view_server,
+    serve_tournament_view,
+)
 
 __all__ = [
     "CanonicalDecision",
@@ -78,6 +88,8 @@ __all__ = [
     "JudgeMatch",
     "JudgeRunResult",
     "AddModelsResult",
+    "RegisterModelsResult",
+    "UpdateConfigResult",
     "TournamentRunResult",
     "TournamentStatus",
     "MatchOutcome",
@@ -93,6 +105,8 @@ __all__ = [
     "TournamentConfig",
     "TournamentPrompt",
     "TournamentStore",
+    "TournamentViewDataSource",
+    "TournamentViewServer",
     "TrueSkillRatingParams",
     "build_generation_task",
     "build_judge_samples",
@@ -101,6 +115,7 @@ __all__ = [
     "check_convergence",
     "check_hard_stops",
     "check_hard_stops_for_config",
+    "create_tournament_view_server",
     "decision_valid_rate",
     "deterministic_id",
     "index_generation_responses",
@@ -116,6 +131,7 @@ __all__ = [
     "reconcile_side_swap",
     "render_judge_prompt",
     "schedule_match_batch",
+    "serve_tournament_view",
     "summarize_ratings",
     "apply_outcomes",
     "apply_outcomes_to_store",
@@ -126,5 +142,7 @@ __all__ = [
     "resume_tournament",
     "run_tournament",
     "add_models",
+    "register_models",
     "tournament_status",
+    "update_tournament_config",
 ]

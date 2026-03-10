@@ -1,0 +1,291 @@
+import json
+import sys
+import types
+from functools import lru_cache
+from pathlib import Path
+
+
+def _install_trueskill_stub() -> None:
+    if "trueskill" in sys.modules:
+        return
+
+    trueskill = types.ModuleType("trueskill")
+
+    class Rating:
+        def __init__(self, mu: float = 25.0, sigma: float = 25.0 / 3.0) -> None:
+            self.mu = mu
+            self.sigma = sigma
+
+    class TrueSkill:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+
+        def cdf(self, value: float) -> float:
+            del value
+            return 0.5
+
+    def rate_1vs1(
+        first: Rating,
+        second: Rating,
+        drawn: bool = False,
+        env: TrueSkill | None = None,
+    ) -> tuple[Rating, Rating]:
+        del drawn, env
+        return first, second
+
+    trueskill.Rating = Rating
+    trueskill.TrueSkill = TrueSkill
+    trueskill.rate_1vs1 = rate_1vs1
+    sys.modules["trueskill"] = trueskill
+
+
+_install_trueskill_stub()
+
+
+@lru_cache(maxsize=1)
+def _modules() -> dict[str, object]:
+    from dfm_evals import cli as cli_module
+    from dfm_evals import eee_export as eee_export_module
+    from dfm_evals.tournament import _run_state as run_state
+    from dfm_evals.tournament.config import TournamentConfig, TournamentPrompt
+    from dfm_evals.tournament.store import TournamentStore
+    from dfm_evals.tournament.types import ModelRating, match_id, model_id, response_id
+
+    return {
+        "ModelRating": ModelRating,
+        "TournamentConfig": TournamentConfig,
+        "TournamentPrompt": TournamentPrompt,
+        "TournamentStore": TournamentStore,
+        "cli_module": cli_module,
+        "eee_export_module": eee_export_module,
+        "match_id": match_id,
+        "model_id": model_id,
+        "response_id": response_id,
+        "run_state": run_state,
+    }
+
+
+def _config(tmp_path: Path) -> object:
+    modules = _modules()
+    TournamentConfig = modules["TournamentConfig"]
+    TournamentPrompt = modules["TournamentPrompt"]
+    return TournamentConfig(
+        run_dir=tmp_path / "logs",
+        project_id="demo-tournament",
+        contestant_models=["org/model-a", "org/model-b"],
+        prompts=[TournamentPrompt(id="prompt-1", text="Hello")],
+        contestant_generate_config={"temperature": 0.1, "max_tokens": 32},
+        judge_model="openai/judge-model",
+        judge_generate_config={"temperature": 0.0},
+        judge_prompt_template="Judge:\n{prompt}\nA:{response_a}\nB:{response_b}",
+    )
+
+
+def _seed_state(config: object) -> None:
+    modules = _modules()
+    TournamentStore = modules["TournamentStore"]
+    ModelRating = modules["ModelRating"]
+    run_state = modules["run_state"]
+
+    model_a_id = modules["model_id"]("org/model-a")
+    model_b_id = modules["model_id"]("org/model-b")
+    response_a_id = modules["response_id"](
+        model_a_id,
+        "prompt-1",
+        source_log="a.eval",
+        sample_id="1",
+        sample_uuid="uuid-a",
+        response_text="response A",
+    )
+    response_b_id = modules["response_id"](
+        model_b_id,
+        "prompt-1",
+        source_log="b.eval",
+        sample_id="1",
+        sample_uuid="uuid-b",
+        response_text="response B",
+    )
+    scheduled_match_id = modules["match_id"](
+        model_a_id,
+        model_b_id,
+        "prompt-1",
+        1,
+        "batch-000001",
+    )
+
+    with TournamentStore(config.state_dir) as store:
+        store.initialize_from_config(config)
+        run_state.ensure_defaults(
+            store,
+            config_json=config.model_dump_json(),
+            run_status="completed",
+        )
+        run_state.set_run_status(store, "completed")
+        run_state.set_converged(store, True)
+        run_state.set_stop_reasons(store, ["converged"])
+
+        store.upsert_response(
+            response_id=response_a_id,
+            model_id=model_a_id,
+            prompt_id="prompt-1",
+            response_text="response A",
+            source_log="a.eval",
+            source_log_mtime=100.0,
+            sample_id="1",
+            sample_uuid="uuid-a",
+        )
+        store.upsert_response(
+            response_id=response_b_id,
+            model_id=model_b_id,
+            prompt_id="prompt-1",
+            response_text="response B",
+            source_log="b.eval",
+            source_log_mtime=100.0,
+            sample_id="1",
+            sample_uuid="uuid-b",
+        )
+        store.upsert_match(
+            match_id=scheduled_match_id,
+            model_a=model_a_id,
+            model_b=model_b_id,
+            prompt_id="prompt-1",
+            response_a_id=response_a_id,
+            response_b_id=response_b_id,
+            batch_id="batch-000001",
+            round_index=1,
+            status="rated",
+        )
+        store.upsert_judgment(
+            judgment_id="judge-ab",
+            match_id=scheduled_match_id,
+            side="ab",
+            decision="A",
+            judge_model=config.judge_model,
+            explanation="A wins",
+            raw_completion="DECISION: A",
+            source_log="judge.eval",
+            sample_uuid="judge-ab",
+        )
+        store.upsert_judgment(
+            judgment_id="judge-ba",
+            match_id=scheduled_match_id,
+            side="ba",
+            decision="B",
+            judge_model=config.judge_model,
+            explanation="A wins",
+            raw_completion="DECISION: B",
+            source_log="judge.eval",
+            sample_uuid="judge-ba",
+        )
+        store.upsert_model_rating(
+            ModelRating(
+                model_id=model_a_id,
+                mu=27.0,
+                sigma=7.0,
+                games=1,
+                wins=1,
+                losses=0,
+                ties=0,
+            )
+        )
+        store.upsert_model_rating(
+            ModelRating(
+                model_id=model_b_id,
+                mu=23.0,
+                sigma=7.5,
+                games=1,
+                wins=0,
+                losses=1,
+                ties=0,
+            )
+        )
+
+
+def test_export_tournament_results_writes_eee_records(tmp_path: Path) -> None:
+    modules = _modules()
+    config = _config(tmp_path)
+    _seed_state(config)
+
+    written = modules["eee_export_module"].export_tournament_results(
+        target=config,
+        output_dir=tmp_path / "eee",
+    )
+
+    assert len(written) == 2
+
+    records_by_model: dict[str, dict[str, object]] = {}
+    for path in written:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        records_by_model[record["model_info"]["id"]] = record
+
+    assert set(records_by_model.keys()) == {"org/model-a", "org/model-b"}
+
+    model_a_record = records_by_model["org/model-a"]
+    assert model_a_record["source_metadata"]["source_name"] == "tournament"
+    assert model_a_record["eval_library"]["name"] == "dfm_evals.tournament"
+
+    metrics = {
+        result["score_details"]["details"]["metric"]: result
+        for result in model_a_record["evaluation_results"]
+    }
+    assert metrics["conservative"]["score_details"]["details"]["task"] == "demo-tournament"
+    assert metrics["conservative"]["score_details"]["details"]["rank"] == "1"
+    assert metrics["conservative"]["score_details"]["score"] == 6.0
+    assert metrics["conservative"]["source_data"]["additional_details"]["rated_matches"] == "1"
+    assert metrics["conservative"]["metric_config"]["llm_scoring"]["judges"][0]["model_info"]["name"] == "openai/judge-model"
+    assert metrics["conservative"]["generation_config"]["additional_details"]["judge_model"] == "openai/judge-model"
+    assert "win_rate" in metrics
+
+    model_b_metrics = {
+        result["score_details"]["details"]["metric"]: result
+        for result in records_by_model["org/model-b"]["evaluation_results"]
+    }
+    assert model_b_metrics["conservative"]["score_details"]["details"]["rank"] == "2"
+
+
+def test_cli_eee_tournament_dispatches(tmp_path: Path, monkeypatch, capsys) -> None:
+    modules = _modules()
+    cli_module = modules["cli_module"]
+    eee_export_module = modules["eee_export_module"]
+    output_path = tmp_path / "exported.json"
+    output_path.write_text("{}\n", encoding="utf-8")
+    captured: list[dict[str, object]] = []
+
+    def fake_export_tournament_results(**kwargs: object) -> list[Path]:
+        captured.append(dict(kwargs))
+        return [output_path]
+
+    monkeypatch.setattr(
+        eee_export_module,
+        "export_tournament_results",
+        fake_export_tournament_results,
+    )
+
+    exit_code = cli_module.main(
+        [
+            "eee",
+            "tournament",
+            "--target",
+            "state-dir",
+            "--output-dir",
+            tmp_path.as_posix(),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured == [
+        {
+            "target": "state-dir",
+            "output_dir": tmp_path.as_posix(),
+            "source_organization_name": "unknown",
+            "evaluator_relationship": "third_party",
+            "source_organization_url": None,
+            "source_organization_logo_url": None,
+            "eval_library_name": "dfm_evals.tournament",
+            "eval_library_version": None,
+        }
+    ]
+
+    stdout = capsys.readouterr().out
+    assert output_path.as_posix() in stdout
+    assert "Exported 1 file(s)." in stdout

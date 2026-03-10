@@ -1,0 +1,23 @@
+defaults:
+  tp: 1
+  pp: 1
+  dp: 8
+  ctx: 4096
+  gpu_mem: 0.9
+
+contestants:
+  vllm/google/gemma-3-4b-it:
+    mode: local_vllm
+    model: google/gemma-3-4b-it
+  vllm/Qwen/Qwen2.5-7B-Instruct:
+    mode: local_vllm
+    model: Qwen/Qwen2.5-7B-Instruct
+  vllm/google-gemma-3-4b-pt-hermes-final:
+    mode: local_vllm
+    model: ../../../../../post/outputs/google-gemma-3-4b-pt-sft_dolci_alignment_free_full_8n_4b_hermes-20260303T131621Z-j16441462/final
+    served_model_name: google-gemma-3-4b-pt-hermes-final
+
+judge:
+  mode: external_openai
+  base_url_env: OPENAI_BASE_URL
+  api_key_env: OPENAI_API_KEY

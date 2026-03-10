@@ -187,7 +187,11 @@ def schedule_match_batch(
 
 def _load_responses(conn: Any) -> dict[tuple[str, str], str]:
     rows = conn.execute(
-        "SELECT model_id, prompt_id, response_id FROM responses"
+        """
+        SELECT model_id, prompt_id, response_id
+        FROM responses
+        WHERE current = 1
+        """
     ).fetchall()
     return {
         (str(row["model_id"]), str(row["prompt_id"])): str(row["response_id"])

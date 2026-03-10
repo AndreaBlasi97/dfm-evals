@@ -8,7 +8,7 @@ from typing import Any, Iterator, Literal, Mapping
 from .config import TournamentConfig, load_tournament_config
 from .types import ModelRating, default_project_id, model_id
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 TableName = Literal[
     "models",
     "prompts",
@@ -20,8 +20,7 @@ TableName = Literal[
     "run_state",
 ]
 
-MIGRATIONS: dict[int, str] = {
-    1: """
+SCHEMA_SQL = """
     CREATE TABLE IF NOT EXISTS models (
       model_id TEXT PRIMARY KEY,
       model_name TEXT NOT NULL UNIQUE,
@@ -42,10 +41,11 @@ MIGRATIONS: dict[int, str] = {
       prompt_id TEXT NOT NULL,
       response_text TEXT NOT NULL,
       source_log TEXT,
+      source_log_mtime REAL NOT NULL DEFAULT 0,
       sample_id TEXT,
       sample_uuid TEXT,
+      current INTEGER NOT NULL DEFAULT 0,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(model_id, prompt_id),
       FOREIGN KEY(model_id) REFERENCES models(model_id),
       FOREIGN KEY(prompt_id) REFERENCES prompts(prompt_id)
     );
@@ -112,12 +112,16 @@ MIGRATIONS: dict[int, str] = {
     );
 
     CREATE INDEX IF NOT EXISTS idx_responses_prompt ON responses(prompt_id);
+    CREATE INDEX IF NOT EXISTS idx_responses_slot_mtime
+      ON responses(model_id, prompt_id, source_log_mtime DESC, created_at DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_responses_current_unique
+      ON responses(model_id, prompt_id)
+      WHERE current = 1;
     CREATE INDEX IF NOT EXISTS idx_matches_pair ON matches(model_a, model_b);
     CREATE INDEX IF NOT EXISTS idx_matches_batch ON matches(batch_id);
     CREATE INDEX IF NOT EXISTS idx_judgments_match ON judgments(match_id);
     CREATE INDEX IF NOT EXISTS idx_ratings_sigma ON ratings(sigma);
-    """,
-}
+    """
 
 
 class TournamentStore(AbstractContextManager["TournamentStore"]):
@@ -295,40 +299,84 @@ class TournamentStore(AbstractContextManager["TournamentStore"]):
         prompt_id: str,
         response_text: str,
         source_log: str | None,
+        source_log_mtime: float | None,
         sample_id: str | None,
         sample_uuid: str | None,
         commit: bool = True,
     ) -> bool:
-        """Insert or update a response and return whether it was newly inserted."""
+        """Insert immutable response version and promote it if it is the newest."""
         conn = self.connection()
+        normalized_mtime = float(source_log_mtime) if source_log_mtime is not None else 0.0
         existing = conn.execute(
-            "SELECT response_id FROM responses WHERE model_id = ? AND prompt_id = ?",
-            (model_id, prompt_id),
+            "SELECT response_id FROM responses WHERE response_id = ?",
+            (response_id,),
         ).fetchone()
         inserted = existing is None
-        conn.execute(
-            """
-            INSERT INTO responses (
-              response_id, model_id, prompt_id, response_text, source_log, sample_id, sample_uuid
+        if inserted:
+            conn.execute(
+                """
+                INSERT INTO responses (
+                  response_id, model_id, prompt_id, response_text, source_log, source_log_mtime,
+                  sample_id, sample_uuid, current
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    response_id,
+                    model_id,
+                    prompt_id,
+                    response_text,
+                    source_log,
+                    normalized_mtime,
+                    sample_id,
+                    sample_uuid,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(model_id, prompt_id) DO UPDATE SET
-              response_id = excluded.response_id,
-              response_text = excluded.response_text,
-              source_log = excluded.source_log,
-              sample_id = excluded.sample_id,
-              sample_uuid = excluded.sample_uuid
+        else:
+            conn.execute(
+                """
+                UPDATE responses
+                SET source_log = ?,
+                    source_log_mtime = ?,
+                    sample_id = ?,
+                    sample_uuid = ?
+                WHERE response_id = ?
+                """,
+                (
+                    source_log,
+                    normalized_mtime,
+                    sample_id,
+                    sample_uuid,
+                    response_id,
+                ),
+            )
+
+        current = conn.execute(
+            """
+            SELECT response_id, source_log_mtime
+            FROM responses
+            WHERE model_id = ?
+              AND prompt_id = ?
+              AND current = 1
             """,
-            (
-                response_id,
-                model_id,
-                prompt_id,
-                response_text,
-                source_log,
-                sample_id,
-                sample_uuid,
-            ),
-        )
+            (model_id, prompt_id),
+        ).fetchone()
+        should_promote = current is None or normalized_mtime > float(current["source_log_mtime"])
+        if should_promote and (current is None or str(current["response_id"]) != response_id):
+            conn.execute(
+                """
+                UPDATE responses
+                SET current = 0
+                WHERE model_id = ?
+                  AND prompt_id = ?
+                  AND current = 1
+                """,
+                (model_id, prompt_id),
+            )
+            conn.execute(
+                "UPDATE responses SET current = 1 WHERE response_id = ?",
+                (response_id,),
+            )
         if commit:
             conn.commit()
         return inserted
@@ -343,6 +391,7 @@ class TournamentStore(AbstractContextManager["TournamentStore"]):
             SELECT m.model_name AS model_name, r.prompt_id AS prompt_id
             FROM responses r
             JOIN models m ON m.model_id = r.model_id
+            WHERE r.current = 1
             """
         ).fetchall()
         present = {(str(row["model_name"]), str(row["prompt_id"])) for row in rows}
@@ -655,6 +704,7 @@ class TournamentStore(AbstractContextManager["TournamentStore"]):
             FROM responses r
             JOIN models m ON m.model_id = r.model_id
             WHERE m.active = 1
+              AND r.current = 1
             """
         ).fetchone()
         if row is None:
@@ -737,13 +787,16 @@ class TournamentStore(AbstractContextManager["TournamentStore"]):
             raise ValueError(
                 f"Unsupported schema version {current_version}; expected <= {SCHEMA_VERSION}"
             )
-
-        for version in range(current_version + 1, SCHEMA_VERSION + 1):
-            migration_sql = MIGRATIONS.get(version)
-            if migration_sql is None:
-                raise ValueError(f"No migration registered for schema version {version}")
-            conn.executescript(migration_sql)
-            conn.execute(f"PRAGMA user_version = {version}")
+        if current_version == 0:
+            conn.executescript(SCHEMA_SQL)
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+            return
+        if current_version != SCHEMA_VERSION:
+            raise ValueError(
+                "Tournament state schema is from an older incompatible version. "
+                "Delete the old tournament state and re-initialize it."
+            )
         conn.commit()
 
 
@@ -752,9 +805,13 @@ def initialize_tournament_store(
 ) -> Path:
     """Initialize tournament state from config and return database path."""
     parsed = load_tournament_config(config)
-    if parsed.state_dir is None:
-        raise ValueError("state_dir is required")
+    from . import _run_state as run_state
 
     with TournamentStore(parsed.state_dir) as store:
         store.initialize_from_config(parsed)
+        run_state.ensure_defaults(
+            store,
+            config_json=parsed.model_dump_json(),
+            run_status="running",
+        )
         return store.db_path

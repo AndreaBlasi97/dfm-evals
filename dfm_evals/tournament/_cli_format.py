@@ -4,7 +4,13 @@ from typing import Any, Sequence
 
 from .exports import ExportResult
 from .generation import GenerationRunResult
-from .orchestrator import AddModelsResult, TournamentRunResult, TournamentStatus
+from .orchestrator import (
+    AddModelsResult,
+    RegisterModelsResult,
+    TournamentRunResult,
+    TournamentStatus,
+    UpdateConfigResult,
+)
 from .rating import ModelStanding
 
 
@@ -12,7 +18,7 @@ def generation_result_payload(result: GenerationRunResult) -> dict[str, Any]:
     return {
         "models": result.models,
         "prompt_count": result.prompt_count,
-        "log_dir": result.log_dir.as_posix(),
+        "generation_log_dir": result.generation_log_dir.as_posix(),
         "log_count": result.log_count,
     }
 
@@ -34,6 +40,23 @@ def add_models_result_payload(result: AddModelsResult) -> dict[str, Any]:
         "already_present_models": result.already_present_models,
         "generated_models": result.generated_models,
         "run": run_result_payload(result.run),
+    }
+
+
+def register_models_result_payload(result: RegisterModelsResult) -> dict[str, Any]:
+    return {
+        "requested_models": result.requested_models,
+        "added_models": result.added_models,
+        "already_present_models": result.already_present_models,
+        "status": status_payload(result.status),
+    }
+
+
+def update_config_result_payload(result: UpdateConfigResult) -> dict[str, Any]:
+    return {
+        "old_max_total_matches": result.old_max_total_matches,
+        "new_max_total_matches": result.new_max_total_matches,
+        "status": status_payload(result.status),
     }
 
 
@@ -73,7 +96,7 @@ def format_generation_result(result: GenerationRunResult) -> str:
                 ("Prompt Count", str(result.prompt_count)),
                 ("Model Count", str(len(result.models))),
                 ("Log Count", str(result.log_count)),
-                ("Log Dir", result.log_dir.as_posix()),
+                ("Generation Log Dir", result.generation_log_dir.as_posix()),
             ],
         )
     )
@@ -131,6 +154,47 @@ def format_add_models_result(result: AddModelsResult) -> str:
         else "Added Models\n(no rows)"
     )
     lines.append(format_run_result(result.run))
+    return "\n\n".join(lines)
+
+
+def format_register_models_result(result: RegisterModelsResult) -> str:
+    lines: list[str] = []
+    lines.append(
+        _format_key_value_table(
+            "Register Models Summary",
+            [
+                ("Requested", str(len(result.requested_models))),
+                ("Added", str(len(result.added_models))),
+                ("Already Present", str(len(result.already_present_models))),
+            ],
+        )
+    )
+    lines.append(
+        _format_table(
+            "Added Models",
+            ["#", "Model Name"],
+            [[str(index), name] for index, name in enumerate(result.added_models, start=1)],
+            align_right={0},
+        )
+        if len(result.added_models) > 0
+        else "Added Models\n(no rows)"
+    )
+    lines.append(format_status(result.status, title="Tournament Status"))
+    return "\n\n".join(lines)
+
+
+def format_update_config_result(result: UpdateConfigResult) -> str:
+    lines: list[str] = []
+    lines.append(
+        _format_key_value_table(
+            "Update Tournament Config",
+            [
+                ("Old Max Total Matches", str(result.old_max_total_matches)),
+                ("New Max Total Matches", str(result.new_max_total_matches)),
+            ],
+        )
+    )
+    lines.append(format_status(result.status, title="Tournament Status"))
     return "\n\n".join(lines)
 
 

@@ -8,7 +8,7 @@ from inspect_ai.model import GenerateConfig, Model, get_model
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from pydantic import BaseModel, Field, JsonValue
 
-from ._model_args import apply_default_vllm_model_args
+from ._model_args import close_model, resolve_tournament_model_args
 from ._trace import tournament_trace_file
 from .config import TournamentConfig, load_tournament_config
 from .scorer import pairwise_judge
@@ -34,7 +34,7 @@ class JudgeRunResult(BaseModel):
 
     match_count: int
     sample_count: int
-    log_dir: Path
+    judge_log_dir: Path
     log_count: int
     logs: list[EvalLog] = Field(default_factory=list)
 
@@ -140,19 +140,23 @@ def run_judge_batch(
     judge_log_dir = (
         Path(log_dir)
         if log_dir is not None
-        else parsed.log_dir / "judge"
+        else parsed.judge_log_dir
     )
 
-    grader = _resolve_grader_model(parsed, grader_model)
-    with tournament_trace_file(parsed.log_dir, "judge"):
-        logs = eval(
-            tasks=task,
-            model=parsed.judge_model,
-            model_roles={"grader": grader},
-            log_dir=judge_log_dir.as_posix(),
-            epochs=Epochs(1, []),
-            max_samples=parsed.judge_max_samples,
-        )
+    grader, owns_grader = _resolve_grader_model(parsed, grader_model)
+    try:
+        with tournament_trace_file(parsed.traces_dir, "judge"):
+            logs = eval(
+                tasks=task,
+                model=None,
+                model_roles={"grader": grader},
+                log_dir=judge_log_dir.as_posix(),
+                epochs=Epochs(1, []),
+                max_samples=parsed.judge_max_samples,
+            )
+    finally:
+        if owns_grader:
+            close_model(grader)
     failed_logs = [log for log in logs if log.status != "success"]
     if len(failed_logs) > 0:
         raise RuntimeError(
@@ -162,7 +166,7 @@ def run_judge_batch(
     return JudgeRunResult(
         match_count=len(matches),
         sample_count=len(build_judge_samples(matches, side_swap=parsed.side_swap)),
-        log_dir=judge_log_dir,
+        judge_log_dir=judge_log_dir,
         log_count=len(logs),
         logs=logs,
     )
@@ -171,15 +175,16 @@ def run_judge_batch(
 def _resolve_grader_model(
     config: TournamentConfig,
     grader_model: str | Model | None,
-) -> Model:
+) -> tuple[Model, bool]:
     if isinstance(grader_model, Model):
-        return grader_model
+        return grader_model, False
 
     model_name = config.judge_model if grader_model is None else grader_model
     generate_config = GenerateConfig.model_validate(config.judge_generate_config)
-    model_args = apply_default_vllm_model_args(model_name, {})
+    model_args = resolve_tournament_model_args(model_name)
     return get_model(
         model_name,
         config=generate_config,
+        memoize=False,
         **model_args,
-    )
+    ), True

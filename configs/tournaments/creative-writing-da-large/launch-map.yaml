@@ -1,0 +1,71 @@
+defaults:
+  tp: 1
+  pp: 1
+  dp: 8
+  ctx: 4096
+  gpu_mem: 0.9
+
+contestants:
+  vllm/google/gemma-3-4b-it:
+    mode: local_vllm
+    model: google/gemma-3-4b-it
+  vllm/Qwen/Qwen3.5-4B:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-4B
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/Qwen/Qwen3.5-9B:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-9B
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/Qwen/Qwen3.5-27B-FP8:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-27B-FP8
+    dp: 8
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/Qwen/Qwen3.5-35B-A3B:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-35B-A3B
+    tp: 8
+    dp: 1
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/Qwen/Qwen3.5-122B-A10B:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-122B-A10B
+    tp: 8
+    dp: 1
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/Qwen/Qwen3.5-397B-A17B:
+    mode: local_vllm
+    model: Qwen/Qwen3.5-397B-A17B
+    tp: 8
+    pp: 2
+    dp: 1
+    nodes: 2
+    enforce_eager: true
+    default_chat_template_kwargs:
+      enable_thinking: false
+  vllm/google-gemma-3-4b-pt-hermes-final:
+    mode: local_vllm
+    model: /pfs/lustrep4/scratch/project_465002183/rasmus/post/outputs/google-gemma-3-4b-pt-sft_dolci_alignment_free_full_8n_4b_hermes-20260303T131621Z-j16441462/final
+    served_model_name: google-gemma-3-4b-pt-hermes-final
+  vllm/local/hermes-4n-full-20260306-lr3e5-warmup50:
+    mode: local_vllm
+    model: /flash/project_465002183/trl-runs/hermes-4n-full-20260306-lr3e5-warmup50/final
+    served_model_name: local/hermes-4n-full-20260306-lr3e5-warmup50
+  vllm/google/gemma-3-12b-it:
+    mode: local_vllm
+    model: google/gemma-3-12b-it
+  openai/qwen-235b:
+    mode: external_openai
+    base_url_env: OPENAI_BASE_URL
+    api_key_env: OPENAI_API_KEY
+
+judge:
+  mode: external_openai
+  base_url_env: OPENAI_BASE_URL
+  api_key_env: OPENAI_API_KEY

@@ -1475,3 +1475,297 @@ def export_euroeval_results(
         )
 
     return written
+
+
+def _tournament_benchmark_name(project_id: str | None) -> str:
+    value = (project_id or "").strip()
+    return value if value else "tournament"
+
+
+def _extract_tournament_generation_config(
+    config: Any,
+    status: Any,
+) -> dict[str, Any] | None:
+    contestant_generate_config = _as_mapping(
+        getattr(config, "contestant_generate_config", None)
+    )
+    judge_generate_config = _as_mapping(getattr(config, "judge_generate_config", None))
+
+    generation_args: dict[str, Any] = {}
+    for key in ("temperature", "top_p", "top_k", "max_tokens"):
+        value = contestant_generate_config.get(key)
+        if value is not None:
+            generation_args[key] = value
+
+    additional_details = _compact(
+        {
+            "project_id": getattr(status, "project_id", None),
+            "run_status": getattr(status, "run_status", None),
+            "converged": str(getattr(status, "converged", False)).lower(),
+            "stop_reasons": (
+                json.dumps(
+                    getattr(status, "stop_reasons", []),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                if getattr(status, "stop_reasons", None)
+                else None
+            ),
+            "total_models": str(getattr(status, "total_models", "")),
+            "total_prompts": str(getattr(status, "total_prompts", "")),
+            "total_matches": str(getattr(status, "total_matches", "")),
+            "rated_matches": str(getattr(status, "rated_matches", "")),
+            "judge_model": getattr(config, "judge_model", None),
+            "run_dir": (
+                str(getattr(config, "run_dir"))
+                if getattr(config, "run_dir", None) is not None
+                else None
+            ),
+            "state_dir": (
+                str(getattr(config, "state_dir"))
+                if getattr(config, "state_dir", None) is not None
+                else None
+            ),
+            "contestant_generate_config": (
+                json.dumps(
+                    contestant_generate_config,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if contestant_generate_config
+                else None
+            ),
+            "judge_generate_config": (
+                json.dumps(
+                    judge_generate_config,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+                if judge_generate_config
+                else None
+            ),
+        }
+    )
+
+    if not generation_args and not additional_details:
+        return None
+
+    return _compact(
+        {
+            "generation_args": generation_args or None,
+            "additional_details": additional_details or None,
+        }
+    )
+
+
+def _extract_tournament_source_data(
+    *,
+    config: Any,
+    status: Any,
+    benchmark_name: str,
+) -> dict[str, Any]:
+    return _compact(
+        {
+            "dataset_name": benchmark_name,
+            "source_type": "other",
+            "additional_details": {
+                "project_id": getattr(status, "project_id", None),
+                "run_status": getattr(status, "run_status", None),
+                "converged": str(getattr(status, "converged", False)).lower(),
+                "stop_reasons": (
+                    json.dumps(
+                        getattr(status, "stop_reasons", []),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    if getattr(status, "stop_reasons", None)
+                    else None
+                ),
+                "total_models": str(getattr(status, "total_models", "")),
+                "total_prompts": str(getattr(status, "total_prompts", "")),
+                "response_count": str(getattr(status, "response_count", "")),
+                "expected_responses": str(getattr(status, "expected_responses", "")),
+                "missing_responses": str(getattr(status, "missing_responses", "")),
+                "total_matches": str(getattr(status, "total_matches", "")),
+                "rated_matches": str(getattr(status, "rated_matches", "")),
+                "judge_model": getattr(config, "judge_model", None),
+            },
+        }
+    )
+
+
+def _build_tournament_llm_scoring(config: Any) -> dict[str, Any] | None:
+    judge_model = getattr(config, "judge_model", None)
+    if not isinstance(judge_model, str) or not judge_model.strip():
+        return None
+
+    return _compact(
+        {
+            "judges": [{"model_info": _parse_model_info(judge_model)}],
+            "input_prompt": getattr(config, "judge_prompt_template", None),
+        }
+    )
+
+
+def _extract_tournament_results(
+    *,
+    benchmark_name: str,
+    source_data: Mapping[str, Any],
+    generation_config: Mapping[str, Any] | None,
+    llm_scoring: Mapping[str, Any] | None,
+    standing: Any,
+    rank: int,
+) -> list[dict[str, Any]]:
+    metrics: list[tuple[str, float]] = [
+        ("rank", float(rank)),
+        ("conservative", float(getattr(standing, "conservative"))),
+        ("elo_like", float(getattr(standing, "elo_like"))),
+        ("mu", float(getattr(standing, "mu"))),
+        ("sigma", float(getattr(standing, "sigma"))),
+        ("games", float(getattr(standing, "games"))),
+        ("wins", float(getattr(standing, "wins"))),
+        ("losses", float(getattr(standing, "losses"))),
+        ("ties", float(getattr(standing, "ties"))),
+    ]
+
+    games = int(getattr(standing, "games"))
+    if games > 0:
+        metrics.extend(
+            [
+                ("win_rate", float(getattr(standing, "wins")) / games),
+                ("tie_rate", float(getattr(standing, "ties")) / games),
+            ]
+        )
+
+    lower_is_better_metrics = {"rank", "sigma", "losses"}
+    count_metrics = {"games", "wins", "losses", "ties"}
+    shared_details = {
+        "task": benchmark_name,
+        "scorer": "tournament",
+        "rank": str(rank),
+        "model_name": getattr(standing, "model_name", None),
+        "games": str(getattr(standing, "games")),
+        "wins": str(getattr(standing, "wins")),
+        "losses": str(getattr(standing, "losses")),
+        "ties": str(getattr(standing, "ties")),
+    }
+
+    results: list[dict[str, Any]] = []
+    for metric_name, score in metrics:
+        score_details = {
+            "score": score,
+            "details": _string_dict({**shared_details, "metric": metric_name}),
+            "uncertainty": (
+                {"num_samples": games}
+                if games > 0 and metric_name not in count_metrics
+                else None
+            ),
+        }
+        results.append(
+            _compact(
+                {
+                    "evaluation_name": f"{benchmark_name}/tournament/{metric_name}",
+                    "source_data": dict(source_data),
+                    "metric_config": {
+                        "evaluation_description": f"tournament:{metric_name}",
+                        "lower_is_better": metric_name in lower_is_better_metrics,
+                        "score_type": (
+                            "count" if metric_name in count_metrics else "continuous"
+                        ),
+                        "min_score": min(0.0, score),
+                        "max_score": max(1.0, score),
+                        "llm_scoring": dict(llm_scoring) if llm_scoring else None,
+                    },
+                    "score_details": score_details,
+                    "generation_config": (
+                        dict(generation_config) if generation_config is not None else None
+                    ),
+                }
+            )
+        )
+
+    return results
+
+
+def export_tournament_results(
+    *,
+    target: str | Path,
+    output_dir: str | Path,
+    source_organization_name: str = "unknown",
+    evaluator_relationship: str = "third_party",
+    source_organization_url: str | None = None,
+    source_organization_logo_url: str | None = None,
+    eval_library_name: str = "dfm_evals.tournament",
+    eval_library_version: str | None = None,
+) -> list[Path]:
+    from dfm_evals.tournament.exports import load_export_snapshot
+
+    snapshot = load_export_snapshot(target)
+    if len(snapshot.status.standings) == 0:
+        raise ValueError(f"Tournament has no standings to export: {target}")
+
+    destination_root = Path(output_dir)
+    source_metadata = _build_source_metadata(
+        source_name="tournament",
+        source_organization_name=source_organization_name,
+        evaluator_relationship=evaluator_relationship,
+        source_organization_url=source_organization_url,
+        source_organization_logo_url=source_organization_logo_url,
+    )
+    benchmark_name = _tournament_benchmark_name(snapshot.status.project_id)
+    generation_config = _extract_tournament_generation_config(
+        snapshot.config,
+        snapshot.status,
+    )
+    source_data = _extract_tournament_source_data(
+        config=snapshot.config,
+        status=snapshot.status,
+        benchmark_name=benchmark_name,
+    )
+    llm_scoring = _build_tournament_llm_scoring(snapshot.config)
+    retrieved_timestamp = _now_unix_timestamp()
+    library_version = eval_library_version or "unknown"
+
+    written: list[Path] = []
+    for rank, standing in enumerate(snapshot.status.standings, start=1):
+        model_ref = snapshot.names_by_id.get(
+            getattr(standing, "model_id"),
+            getattr(standing, "model_name", None) or getattr(standing, "model_id"),
+        )
+        model_info = _parse_model_info(str(model_ref))
+        evaluation_results = _extract_tournament_results(
+            benchmark_name=benchmark_name,
+            source_data=source_data,
+            generation_config=generation_config,
+            llm_scoring=llm_scoring,
+            standing=standing,
+            rank=rank,
+        )
+        evaluation_id = (
+            f"{_sanitize_path_component(benchmark_name)}/{model_info['id']}/{retrieved_timestamp}"
+        )
+        record = _compact(
+            {
+                "schema_version": SCHEMA_VERSION,
+                "evaluation_id": evaluation_id,
+                "retrieved_timestamp": retrieved_timestamp,
+                "source_metadata": source_metadata,
+                "eval_library": {
+                    "name": eval_library_name,
+                    "version": library_version,
+                },
+                "model_info": model_info,
+                "evaluation_results": evaluation_results,
+            }
+        )
+        destination = _write_record(
+            output_dir=destination_root,
+            benchmark_name=benchmark_name,
+            model_info=model_info,
+            record=record,
+        )
+        written.append(destination)
+
+    return written

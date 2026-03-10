@@ -12,8 +12,6 @@ import yaml
 
 DEFAULT_SUITES_FILE = "eval-sets.yaml"
 PLACEHOLDER_PATTERN = re.compile(r"\{\{\s*([a-z_]+)\s*\}\}")
-
-
 @dataclass(frozen=True)
 class EvalTaskSpec:
     name: str
@@ -383,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     eee_parser = subparsers.add_parser(
         "eee",
-        help="Export Inspect/EuroEval results to every_eval_ever format",
+        help="Export Inspect/EuroEval/tournament results to every_eval_ever format",
     )
     eee_subparsers = eee_parser.add_subparsers(dest="eee_command")
     eee_subparsers.required = True
@@ -500,6 +498,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Optional provider label to record in exported metadata",
     )
 
+    eee_tournament_parser = eee_subparsers.add_parser(
+        "tournament",
+        help="Convert tournament state to every_eval_ever JSON",
+    )
+    eee_tournament_parser.add_argument(
+        "--target",
+        required=True,
+        help="Tournament config path or state directory",
+    )
+    eee_tournament_parser.add_argument(
+        "--output-dir",
+        default="every_eval_ever/data",
+        help="Output directory root for converted JSON files",
+    )
+    eee_tournament_parser.add_argument(
+        "--source-organization-name",
+        default="unknown",
+        help="Organization responsible for this evaluation run metadata",
+    )
+    eee_tournament_parser.add_argument(
+        "--evaluator-relationship",
+        choices=["first_party", "third_party", "collaborative", "other"],
+        default="third_party",
+        help="Relationship between evaluator and model provider",
+    )
+    eee_tournament_parser.add_argument(
+        "--source-organization-url",
+        default=None,
+        help="Optional URL for the source organization",
+    )
+    eee_tournament_parser.add_argument(
+        "--source-organization-logo-url",
+        default=None,
+        help="Optional logo URL for the source organization",
+    )
+    eee_tournament_parser.add_argument(
+        "--eval-library-name",
+        default="dfm_evals.tournament",
+        help="Evaluation library name to emit in exported metadata",
+    )
+    eee_tournament_parser.add_argument(
+        "--eval-library-version",
+        default=None,
+        help="Optional evaluation library version override",
+    )
+
     argv_list = list(argv) if argv is not None else sys.argv[1:]
     args, passthrough_args = parser.parse_known_args(argv_list)
 
@@ -598,7 +642,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "eee":
-        from dfm_evals.eee_export import export_euroeval_results, export_inspect_logs
+        from dfm_evals.eee_export import (
+            export_euroeval_results,
+            export_inspect_logs,
+            export_tournament_results,
+        )
 
         try:
             if args.eee_command == "inspect":
@@ -626,6 +674,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     eval_library_version=args.eval_library_version,
                     inference_base_url=args.inference_base_url,
                     inference_provider_name=args.inference_provider_name,
+                )
+            elif args.eee_command == "tournament":
+                written = export_tournament_results(
+                    target=args.target,
+                    output_dir=args.output_dir,
+                    source_organization_name=args.source_organization_name,
+                    evaluator_relationship=args.evaluator_relationship,
+                    source_organization_url=args.source_organization_url,
+                    source_organization_logo_url=args.source_organization_logo_url,
+                    eval_library_name=args.eval_library_name,
+                    eval_library_version=args.eval_library_version,
                 )
             else:
                 parser.error(f"unsupported eee subcommand: {args.eee_command}")

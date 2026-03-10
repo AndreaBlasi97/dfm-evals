@@ -8,9 +8,9 @@ from typing import Any, Mapping
 
 from pydantic import BaseModel
 
-from ._resolve import resolve_tournament_config
+from ._resolve import resolve_stateful_tournament_config
 from .config import TournamentConfig
-from .orchestrator import tournament_status
+from .orchestrator import TournamentStatus, tournament_status
 from .scorer import canonicalize_side_decision, reconcile_side_swap
 from .store import TournamentStore
 from .types import Decision, InvalidPolicy
@@ -25,6 +25,40 @@ class ExportResult(BaseModel):
     pairwise_matrix_csv: Path | None = None
 
 
+@dataclass
+class TournamentExportSnapshot:
+    """Resolved tournament state used by export backends."""
+
+    config: TournamentConfig
+    status: TournamentStatus
+    names_by_id: dict[str, str]
+    pairwise_stats: dict[tuple[str, str], "_PairStats"]
+
+
+def load_export_snapshot(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    include_pairwise_matrix: bool = False,
+) -> TournamentExportSnapshot:
+    """Load resolved tournament state for export backends."""
+    config = resolve_stateful_tournament_config(config_or_state)
+    status = tournament_status(config)
+    state_dir = _require_state_dir(config)
+
+    with TournamentStore(state_dir) as store:
+        names_by_id = _model_names_by_id(store)
+        pairwise_stats = (
+            _pairwise_stats(config, store) if include_pairwise_matrix else {}
+        )
+
+    return TournamentExportSnapshot(
+        config=config,
+        status=status,
+        names_by_id=names_by_id,
+        pairwise_stats=pairwise_stats,
+    )
+
+
 def export_rankings(
     config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
     *,
@@ -32,18 +66,15 @@ def export_rankings(
     include_pairwise_matrix: bool = True,
 ) -> ExportResult:
     """Export standings to JSON/CSV plus optional pairwise matrix CSV."""
-    config = resolve_tournament_config(config_or_state)
-    status = tournament_status(config)
-    state_dir = _require_state_dir(config)
-
-    export_dir = (
-        Path(output_dir) if output_dir is not None else (config.log_dir / "exports")
+    snapshot = load_export_snapshot(
+        config_or_state,
+        include_pairwise_matrix=include_pairwise_matrix,
     )
-    export_dir.mkdir(parents=True, exist_ok=True)
+    config = snapshot.config
+    status = snapshot.status
 
-    with TournamentStore(state_dir) as store:
-        names_by_id = _model_names_by_id(store)
-        pairwise_stats = _pairwise_stats(config, store) if include_pairwise_matrix else {}
+    export_dir = Path(output_dir) if output_dir is not None else config.exports_dir
+    export_dir.mkdir(parents=True, exist_ok=True)
 
     rankings_json = export_dir / "rankings.json"
     rankings_csv = export_dir / "rankings.csv"
@@ -55,7 +86,7 @@ def export_rankings(
         {
             "rank": rank,
             "model_id": standing.model_id,
-            "model_name": names_by_id.get(standing.model_id, standing.model_id),
+            "model_name": snapshot.names_by_id.get(standing.model_id, standing.model_id),
             "mu": standing.mu,
             "sigma": standing.sigma,
             "conservative": standing.conservative,
@@ -111,8 +142,8 @@ def export_rankings(
         _write_pairwise_matrix_csv(
             pairwise_matrix_csv,
             standings=[standing.model_id for standing in status.standings],
-            names_by_id=names_by_id,
-            stats=pairwise_stats,
+            names_by_id=snapshot.names_by_id,
+            stats=snapshot.pairwise_stats,
         )
 
     return ExportResult(
@@ -256,11 +287,7 @@ def _write_pairwise_matrix_csv(
 
 def _model_names_by_id(store: TournamentStore) -> dict[str, str]:
     return store.active_model_names_by_id()
-
-
 def _require_state_dir(config: TournamentConfig) -> Path:
-    if config.state_dir is None:
-        raise ValueError("state_dir is required")
     return config.state_dir
 
 

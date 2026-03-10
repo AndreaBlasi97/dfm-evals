@@ -1,27 +1,26 @@
-import asyncio
-import logging
-import os
-import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
-import yaml
 from inspect_ai import Task, eval_set
 from inspect_ai.dataset import Sample
-from inspect_ai.log import EvalLog
-from inspect_ai.model import GenerateConfig, Model, get_model
+from inspect_ai.log import EvalLog, list_eval_logs, read_eval_log
+from inspect_ai.model import GenerateConfig, get_model
 from pydantic import BaseModel, Field
 
-from ._model_args import apply_default_vllm_model_args
+from ._model_args import (
+    close_model as _close_model,
+)
+from ._model_args import (
+    resolve_env_model_args,
+    resolve_tournament_model_args,
+)
+from ._provenance import GENERATION_TASK_NAME, generation_log_metadata
 from ._trace import tournament_trace_file
 from .config import TournamentConfig, load_tournament_config
-from .types import default_project_id
+from .indexer import index_generation_responses
 
-TOURNAMENT_PHASE_KEY = "inspect_ai:tournament_phase"
-TOURNAMENT_PROJECT_KEY = "inspect_ai:tournament_project_id"
 GENERATION_PHASE = "generation"
-
-logger = logging.getLogger(__name__)
 
 
 class GenerationRunResult(BaseModel):
@@ -29,7 +28,7 @@ class GenerationRunResult(BaseModel):
 
     models: list[str]
     prompt_count: int
-    log_dir: Path
+    generation_log_dir: Path
     log_count: int
     logs: list[EvalLog] = Field(default_factory=list)
 
@@ -46,7 +45,7 @@ def build_generation_task(config: TournamentConfig) -> Task:
     ]
     generate_config = GenerateConfig.model_validate(config.contestant_generate_config)
     return Task(
-        name="tournament_generation",
+        name=GENERATION_TASK_NAME,
         dataset=samples,
         config=generate_config,
     )
@@ -72,26 +71,19 @@ def run_generation(
         )
 
     task = build_generation_task(parsed)
-    project_id = parsed.project_id or default_project_id(
-        parsed.contestant_models,
-        [prompt.id for prompt in parsed.prompts],
-        seed=parsed.seed,
-    )
-    metadata = {
-        TOURNAMENT_PHASE_KEY: GENERATION_PHASE,
-        TOURNAMENT_PROJECT_KEY: project_id,
-    }
-    model_args = _resolve_env_model_args()
+    metadata = generation_log_metadata(parsed)
+    model_args = resolve_env_model_args()
     logs: list[EvalLog] = []
-    with tournament_trace_file(parsed.log_dir, GENERATION_PHASE):
+    with tournament_trace_file(parsed.traces_dir, GENERATION_PHASE):
         for model_name in selected_models:
-            resolved_model_args = apply_default_vllm_model_args(model_name, model_args)
-            model = get_model(model_name, **(resolved_model_args | {"memoize": False}))
+            _purge_generation_logs_for_model(parsed, model_name)
+            resolved_model_args = resolve_tournament_model_args(model_name, model_args)
+            model = get_model(model_name, memoize=False, **resolved_model_args)
             try:
                 success, model_logs = eval_set(
                     tasks=task,
                     model=model,
-                    log_dir=parsed.completion_log_dir.as_posix(),
+                    log_dir=parsed.generation_log_dir.as_posix(),
                     metadata=metadata,
                     score=False,
                     log_dir_allow_dirty=True,
@@ -102,78 +94,44 @@ def run_generation(
                         "Generation run did not complete successfully for model "
                         + f"'{model_name}'"
                     )
+                # Keep tournament state in sync as contestant generation progresses.
+                index_generation_responses(parsed)
             finally:
                 _close_model(model)
 
     return GenerationRunResult(
         models=selected_models,
         prompt_count=len(parsed.prompts),
-        log_dir=parsed.completion_log_dir,
+        generation_log_dir=parsed.generation_log_dir,
         log_count=len(logs),
         logs=logs,
     )
 
 
-def _close_model(model: Model) -> None:
-    """Close model resources created for generation, including local servers."""
-    try:
-        model.__exit__(None, None, None)
-        return
-    except RuntimeError as ex:
-        if "require an async close" not in str(ex):
-            logger.warning(f"Error while closing model '{model}': {ex}")
-            return
-    except Exception as ex:
-        logger.warning(f"Error while closing model '{model}': {ex}")
-        return
-
-    try:
-        _run_coroutine(model.__aexit__(None, None, None))
-    except Exception as ex:
-        logger.warning(f"Error while closing model '{model}': {ex}")
-
-
-def _resolve_env_model_args() -> dict[str, Any]:
-    model_args: dict[str, Any] = {}
-    env_model_args = os.environ.get("INSPECT_EVAL_MODEL_ARGS")
-    if not env_model_args:
-        return model_args
-
-    for arg in env_model_args.split(" "):
-        arg = arg.strip()
-        if not arg or "=" not in arg:
+def _purge_generation_logs_for_model(config: TournamentConfig, model_name: str) -> None:
+    expected_metadata = generation_log_metadata(config)
+    for log_info in list_eval_logs(config.generation_log_dir.as_posix()):
+        header = read_eval_log(log_info, header_only=True)
+        if header.eval.task != GENERATION_TASK_NAME:
+            continue
+        if header.eval.model != model_name:
+            continue
+        if not isinstance(header.eval.metadata, dict):
+            continue
+        if header.eval.metadata != expected_metadata:
             continue
 
-        key, value_raw = arg.split("=", maxsplit=1)
-        value = yaml.safe_load(value_raw)
-        if isinstance(value, str):
-            value_parts = value.split(",")
-            value = value_parts if len(value_parts) > 1 else value_parts[0]
-        model_args[key.replace("-", "_")] = value
-
-    return model_args
+        log_path = _log_info_path(log_info.name)
+        if log_path is None or not log_path.exists():
+            continue
+        log_path.unlink()
 
 
-def _run_coroutine(coro: Any) -> Any:
-    """Run a coroutine from sync code."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
+def _log_info_path(value: str) -> Path | None:
+    if "://" not in value:
+        return Path(value)
 
-    result: dict[str, Any] = {}
-    error: dict[str, BaseException] = {}
-
-    def runner() -> None:
-        try:
-            result["value"] = asyncio.run(coro)
-        except BaseException as ex:  # pragma: no cover
-            error["value"] = ex
-
-    thread = threading.Thread(target=runner, daemon=True)
-    thread.start()
-    thread.join()
-
-    if "value" in error:
-        raise error["value"]
-    return result.get("value")
+    parsed = urlparse(value)
+    if parsed.scheme != "file":
+        return None
+    return Path(parsed.path)

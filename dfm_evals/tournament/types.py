@@ -27,9 +27,38 @@ def model_id(model_name: str) -> str:
     return deterministic_id("model", model_name, length=20)
 
 
-def response_id(model_identifier: str, prompt_id: str) -> str:
-    """Create a deterministic response identifier."""
-    return deterministic_id("response", model_identifier, prompt_id, length=20)
+def response_id(
+    model_identifier: str,
+    prompt_id: str,
+    *,
+    source_log: str | None = None,
+    sample_uuid: str | None = None,
+    sample_id: str | None = None,
+    response_text: str | None = None,
+) -> str:
+    """Create a deterministic response identifier.
+
+    When source/log identity is provided, this identifies an immutable response
+    version rather than a mutable model/prompt slot.
+    """
+    if (
+        source_log is None
+        and sample_uuid is None
+        and sample_id is None
+        and response_text is None
+    ):
+        return deterministic_id("response", model_identifier, prompt_id, length=20)
+
+    return deterministic_id(
+        "response",
+        model_identifier,
+        prompt_id,
+        source_log or "",
+        sample_uuid or "",
+        sample_id or "",
+        response_text or "",
+        length=20,
+    )
 
 
 def match_id(

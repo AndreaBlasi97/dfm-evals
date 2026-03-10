@@ -1,9 +1,51 @@
+import asyncio
+import logging
 import os
 import re
+import shlex
+import threading
 from functools import lru_cache
 from typing import Any, Mapping
 
+import yaml
+from inspect_ai.model import Model
+
 VLLM_BASE_URL = "VLLM_BASE_URL"
+
+logger = logging.getLogger(__name__)
+
+
+def resolve_tournament_model_args(
+    model_name: str,
+    model_args: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve shared tournament model args from env and call-site defaults."""
+    resolved = resolve_env_model_args()
+    if model_args is not None:
+        resolved.update(model_args)
+    return apply_default_vllm_model_args(model_name, resolved)
+
+
+def resolve_env_model_args() -> dict[str, Any]:
+    """Parse `INSPECT_EVAL_MODEL_ARGS` into kwargs for `inspect_ai.get_model()`."""
+    model_args: dict[str, Any] = {}
+    env_model_args = os.environ.get("INSPECT_EVAL_MODEL_ARGS")
+    if not env_model_args:
+        return model_args
+
+    for arg in shlex.split(env_model_args):
+        arg = arg.strip()
+        if not arg or "=" not in arg:
+            continue
+
+        key, value_raw = arg.split("=", maxsplit=1)
+        value = yaml.safe_load(value_raw)
+        if isinstance(value, str):
+            value_parts = value.split(",")
+            value = value_parts if len(value_parts) > 1 else value_parts[0]
+        model_args[key.replace("-", "_")] = value
+
+    return model_args
 
 
 def apply_default_vllm_model_args(
@@ -75,3 +117,71 @@ def _cuda_device_count() -> int:
         return int(torch.cuda.device_count())
     except Exception:
         return 0
+
+
+def close_model(model: Model) -> None:
+    """Close model resources created for tournament generation or judging."""
+    try:
+        model.__exit__(None, None, None)
+        return
+    except RuntimeError as ex:
+        if _is_benign_close_error(ex):
+            _mark_model_closed(model)
+            return
+        if "require an async close" not in str(ex):
+            logger.warning(f"Error while closing model '{model}': {ex}")
+            return
+    except Exception as ex:
+        if _is_benign_close_error(ex):
+            _mark_model_closed(model)
+            return
+        logger.warning(f"Error while closing model '{model}': {ex}")
+        return
+
+    try:
+        _run_coroutine(model.__aexit__(None, None, None))
+    except Exception as ex:
+        if _is_benign_close_error(ex):
+            _mark_model_closed(model)
+            return
+        logger.warning(f"Error while closing model '{model}': {ex}")
+
+
+def _run_coroutine(coro: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as ex:  # pragma: no cover
+            error["value"] = ex
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
+
+
+def _is_benign_close_error(ex: BaseException) -> bool:
+    message = str(ex).strip().lower()
+    return message in {
+        "event loop is closed",
+        "closed event loop",
+    }
+
+
+def _mark_model_closed(model: Model) -> None:
+    if hasattr(model, "_closed"):
+        try:
+            setattr(model, "_closed", True)
+        except Exception:
+            return

@@ -7,22 +7,34 @@ from ._cli_format import (
     format_add_models_result,
     format_export_result,
     format_generation_result,
+    format_register_models_result,
     format_run_result,
     format_status,
+    format_update_config_result,
     generation_result_payload,
+    register_models_result_payload,
     run_result_payload,
     status_payload,
+    update_config_result_payload,
     write_json_output,
 )
 from .exports import export_rankings
 from .generation import run_generation
 from .orchestrator import (
     add_models,
+    register_models,
     resume_tournament,
     run_tournament,
     tournament_status,
+    update_tournament_config,
 )
 from .store import initialize_tournament_store
+from .viewer import (
+    format_tournament_view_runs,
+    list_tournament_view_runs,
+    resolve_tournament_view_target,
+    serve_tournament_view,
+)
 
 ResultT = TypeVar("ResultT")
 
@@ -73,6 +85,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             json_out=args.json_out,
         )
 
+    if args.command == "register-model":
+        return _emit_result(
+            register_models(
+                args.target,
+                models=args.models,
+            ),
+            payload_fn=register_models_result_payload,
+            formatter_fn=format_register_models_result,
+            json_out=args.json_out,
+        )
+
+    if args.command == "update-config":
+        return _emit_result(
+            update_tournament_config(
+                args.target,
+                max_total_matches=args.max_total_matches,
+            ),
+            payload_fn=update_config_result_payload,
+            formatter_fn=format_update_config_result,
+            json_out=args.json_out,
+        )
+
     if args.command == "status":
         return _emit_result(
             tournament_status(args.target),
@@ -87,6 +121,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload_fn=export_result_payload,
             formatter_fn=format_export_result,
             json_out=args.json_out,
+        )
+
+    if args.command == "view":
+        if args.list_runs:
+            print(
+                format_tournament_view_runs(
+                    list_tournament_view_runs(log_root=args.log_root),
+                    log_root=args.log_root,
+                )
+            )
+            return 0
+
+        resolved_target = resolve_tournament_view_target(
+            args.target,
+            latest=args.latest,
+            run_label=args.label,
+            job_id=args.job_id,
+            log_root=args.log_root,
+        )
+        if isinstance(resolved_target, (str, bytes)):
+            print(f"Using tournament target: {resolved_target}")
+        else:
+            print(f"Using tournament target: {resolved_target.as_posix()}")
+        return serve_tournament_view(
+            resolved_target,
+            host=args.host,
+            port=args.port,
         )
 
     parser.print_help()
@@ -148,9 +209,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     resume_parser = subparsers.add_parser(
-        "resume", help="Resume tournament from config path or state dir"
+        "resume", help="Resume tournament from config path or run dir"
     )
-    resume_parser.add_argument("target", help="Config file path or state dir path")
+    resume_parser.add_argument("target", help="Config file path, run dir, or state dir path")
     resume_parser.add_argument(
         "--max-batches",
         type=int,
@@ -168,7 +229,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     add_model_parser.add_argument(
         "target",
-        help="Tournament state directory path (or config/state target)",
+        help="Tournament run directory path (or config/run/state target)",
     )
     add_model_parser.add_argument(
         "--model",
@@ -189,8 +250,49 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional path to save JSON output",
     )
 
+    register_model_parser = subparsers.add_parser(
+        "register-model",
+        help="Register one or more models without generation or judging",
+    )
+    register_model_parser.add_argument(
+        "target",
+        help="Tournament run directory path (or config/run/state target)",
+    )
+    register_model_parser.add_argument(
+        "--model",
+        dest="models",
+        action="append",
+        required=True,
+        help="Model name to register (repeat for multiple models)",
+    )
+    register_model_parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to save JSON output",
+    )
+
+    update_config_parser = subparsers.add_parser(
+        "update-config",
+        help="Update selected persisted config fields for an existing tournament run",
+    )
+    update_config_parser.add_argument(
+        "target",
+        help="Tournament run directory path (or config/run/state target)",
+    )
+    update_config_parser.add_argument(
+        "--max-total-matches",
+        type=int,
+        default=None,
+        help="Persist a new max_total_matches value for this run",
+    )
+    update_config_parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to save JSON output",
+    )
+
     status_parser = subparsers.add_parser("status", help="Show tournament status")
-    status_parser.add_argument("target", help="Config file path or state dir path")
+    status_parser.add_argument("target", help="Config file path, run dir, or state dir path")
     status_parser.add_argument(
         "--json-out",
         default=None,
@@ -198,7 +300,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     export_parser = subparsers.add_parser("export", help="Export rankings artifacts")
-    export_parser.add_argument("target", help="Config file path or state dir path")
+    export_parser.add_argument("target", help="Config file path, run dir, or state dir path")
     export_parser.add_argument(
         "--output-dir",
         default=None,
@@ -208,6 +310,57 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json-out",
         default=None,
         help="Optional path to save JSON output",
+    )
+
+    view_parser = subparsers.add_parser(
+        "view",
+        help="Serve a hosted tournament viewer on a local HTTP port",
+    )
+    view_parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help=(
+            "Optional config/state path, run label, or job id. "
+            "If omitted, the latest tournament run under the log root is used."
+        ),
+    )
+    view_group = view_parser.add_mutually_exclusive_group()
+    view_group.add_argument(
+        "--latest",
+        action="store_true",
+        help="Open the latest tournament run under the log root",
+    )
+    view_group.add_argument(
+        "--label",
+        default=None,
+        help="Open a tournament run by run label under the log root",
+    )
+    view_group.add_argument(
+        "--job-id",
+        default=None,
+        help="Open a tournament run by Slurm job id suffix",
+    )
+    view_parser.add_argument(
+        "--log-root",
+        default="logs/evals-logs",
+        help="Tournament run root for --latest/--label/--job-id lookup (default: logs/evals-logs)",
+    )
+    view_parser.add_argument(
+        "--list-runs",
+        action="store_true",
+        help="List discovered tournament runs under the log root and exit",
+    )
+    view_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind host (default: 127.0.0.1)",
+    )
+    view_parser.add_argument(
+        "--port",
+        type=int,
+        default=7576,
+        help="HTTP bind port (default: 7576)",
     )
 
     return parser

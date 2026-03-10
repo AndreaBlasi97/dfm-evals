@@ -1,0 +1,60 @@
+run_dir: ../../../logs/evals-logs/tournament-creative-writing-da-smoke
+project_id: tournament-creative-writing-da-smoke
+
+contestant_models:
+  - vllm/google/gemma-3-4b-it
+  - vllm/Qwen/Qwen2.5-7B-Instruct
+  - vllm/google-gemma-3-4b-pt-hermes-final
+
+prompt_source:
+  path: ../../../creative_writing_da_small.jsonl
+  format: jsonl
+  id_template: creative-writing-da-{id:02d}
+  text_field: prompt
+  metadata_fields:
+    - title
+    - cateogry
+  metadata_rename:
+    cateogry: category
+  static_metadata:
+    source_file: creative_writing_da_small.jsonl
+
+contestant_generate_config:
+  temperature: 0.6
+  max_tokens: 768
+
+batch_size: 3
+max_total_matches: 12
+p_stop: 0.98
+epsilon: 0.15
+min_pair_matches: 1
+max_pair_matches: 4
+max_prompt_uses_per_pair: 1
+n_stable_batches: 2
+seed: 42
+
+judge_model: openai/qwen-235b
+judge_max_samples: 6
+judge_generate_config:
+  temperature: 0.0
+  max_tokens: 512
+judge_prompt_template: |
+  You are evaluating two answers to the same user prompt.
+
+  User prompt:
+  {prompt}
+
+  Response A:
+  {response_a}
+
+  Response B:
+  {response_b}
+
+  Choose the better response based on instruction following, relevance, coherence, factuality, and overall quality. Prefer the answer that best satisfies the Danish writing task. If both are equally strong or equally weak, choose TIE.
+
+  Reply with exactly two lines.
+  Line 1 must start with `REASON:` and be one short sentence.
+  Line 2 must be exactly one of: `DECISION: A`, `DECISION: B`, or `DECISION: TIE`.
+side_swap: true
+
+invalid_policy: skip
