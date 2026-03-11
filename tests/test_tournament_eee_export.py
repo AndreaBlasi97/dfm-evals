@@ -201,6 +201,37 @@ def _seed_state(config: object) -> None:
         )
 
 
+def _write_euroeval_results_file(path: Path) -> Path:
+    entry = {
+        "dataset": "nlu-danish",
+        "task": "sentiment",
+        "model": "org/model-a",
+        "languages": ["da"],
+        "results": {
+            "total": {
+                "test_accuracy": 0.75,
+                "test_accuracy_se": 0.05,
+            },
+            "raw": [
+                {"correct": True},
+                {"correct": False},
+            ],
+        },
+        "euroeval_version": "1.2.3",
+        "vllm_version": "0.8.5",
+    }
+    path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+    return path
+
+
+def _records_by_model(paths: list[Path]) -> dict[str, dict[str, object]]:
+    records: dict[str, dict[str, object]] = {}
+    for path in paths:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        records[record["model_info"]["id"]] = record
+    return records
+
+
 def test_export_tournament_results_writes_eee_records(tmp_path: Path) -> None:
     modules = _modules()
     config = _config(tmp_path)
@@ -213,10 +244,7 @@ def test_export_tournament_results_writes_eee_records(tmp_path: Path) -> None:
 
     assert len(written) == 2
 
-    records_by_model: dict[str, dict[str, object]] = {}
-    for path in written:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        records_by_model[record["model_info"]["id"]] = record
+    records_by_model = _records_by_model(written)
 
     assert set(records_by_model.keys()) == {"org/model-a", "org/model-b"}
 
@@ -241,6 +269,166 @@ def test_export_tournament_results_writes_eee_records(tmp_path: Path) -> None:
         for result in records_by_model["org/model-b"]["evaluation_results"]
     }
     assert model_b_metrics["conservative"]["score_details"]["details"]["rank"] == "2"
+
+
+def test_export_tournament_results_keeps_stable_evaluation_ids_across_reruns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    modules = _modules()
+    config = _config(tmp_path)
+    _seed_state(config)
+
+    timestamps = iter(["1000.0", "2000.0"])
+    monkeypatch.setattr(
+        modules["eee_export_module"],
+        "_now_unix_timestamp",
+        lambda: next(timestamps),
+    )
+
+    first_written = modules["eee_export_module"].export_tournament_results(
+        target=config,
+        output_dir=tmp_path / "eee",
+    )
+    first_records = _records_by_model(first_written)
+    second_written = modules["eee_export_module"].export_tournament_results(
+        target=config,
+        output_dir=tmp_path / "eee",
+    )
+    second_records = _records_by_model(second_written)
+
+    assert first_records.keys() == second_records.keys()
+    for model_id in first_records:
+        assert first_written[0].parent == second_written[0].parent
+        assert (
+            first_records[model_id]["evaluation_id"]
+            == second_records[model_id]["evaluation_id"]
+        )
+        assert (
+            first_records[model_id]["retrieved_timestamp"]
+            != second_records[model_id]["retrieved_timestamp"]
+        )
+    assert set(first_written) == set(second_written)
+
+
+def test_export_euroeval_results_keeps_stable_evaluation_ids_across_reruns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    modules = _modules()
+    results_file = _write_euroeval_results_file(tmp_path / "euroeval.jsonl")
+
+    timestamps = iter(["1000.0", "2000.0"])
+    monkeypatch.setattr(
+        modules["eee_export_module"],
+        "_now_unix_timestamp",
+        lambda: next(timestamps),
+    )
+
+    first_written = modules["eee_export_module"].export_euroeval_results(
+        results_file=results_file,
+        output_dir=tmp_path / "eee",
+    )
+    first_record = json.loads(first_written[0].read_text(encoding="utf-8"))
+    second_written = modules["eee_export_module"].export_euroeval_results(
+        results_file=results_file,
+        output_dir=tmp_path / "eee",
+    )
+
+    assert len(first_written) == 1
+    assert len(second_written) == 1
+
+    second_record = json.loads(second_written[0].read_text(encoding="utf-8"))
+
+    assert first_written == second_written
+    assert first_record["evaluation_id"] == second_record["evaluation_id"]
+    assert first_record["retrieved_timestamp"] != second_record["retrieved_timestamp"]
+
+
+def test_export_inspect_logs_overwrites_stable_paths_on_rerun(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    modules = _modules()
+    eee_export_module = modules["eee_export_module"]
+    log_path = tmp_path / "inspect" / "run.eval"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("{}", encoding="utf-8")
+
+    inspect_pkg = types.ModuleType("inspect_ai")
+    inspect_log_module = types.ModuleType("inspect_ai.log")
+
+    sample = types.SimpleNamespace(
+        id="sample-1",
+        input="Question?",
+        target="Answer",
+        choices=None,
+        messages=None,
+        scores={},
+        output=types.SimpleNamespace(
+            completion="Answer",
+            model="org/model-a",
+            usage=None,
+            choices=None,
+        ),
+        error=None,
+        metadata=None,
+    )
+    scorer = types.SimpleNamespace(
+        name="accuracy",
+        params={},
+        metrics={"accuracy": types.SimpleNamespace(name="accuracy", value=1.0)},
+    )
+    eval_log = types.SimpleNamespace(
+        eval=types.SimpleNamespace(
+            task="suite/demo-task",
+            dataset={"name": "demo-dataset", "location": "local"},
+            created="2026-03-10T00:00:00+00:00",
+            model="org/model-a",
+            packages={"inspect_ai": "0.1.0"},
+            model_generate_config={},
+            task_args={},
+            config={},
+            model_args={},
+            model_base_url=None,
+        ),
+        stats=types.SimpleNamespace(started_at="2026-03-10T00:00:00+00:00"),
+        results=types.SimpleNamespace(scores=[scorer]),
+        samples=[sample],
+    )
+
+    inspect_log_module.list_eval_logs = lambda path: [types.SimpleNamespace(name=log_path.as_posix())]
+    inspect_log_module.read_eval_log = lambda path, header_only=False: eval_log
+    inspect_pkg.log = inspect_log_module
+
+    monkeypatch.setitem(sys.modules, "inspect_ai", inspect_pkg)
+    monkeypatch.setitem(sys.modules, "inspect_ai.log", inspect_log_module)
+
+    timestamps = iter(["1000.0", "2000.0"])
+    monkeypatch.setattr(eee_export_module, "_now_unix_timestamp", lambda: next(timestamps))
+
+    first_written = eee_export_module.export_inspect_logs(
+        log_path=log_path,
+        output_dir=tmp_path / "eee",
+    )
+    first_record = json.loads(first_written[0].read_text(encoding="utf-8"))
+    first_instance_path = first_written[0].with_suffix(".jsonl")
+    first_instance_rows = first_instance_path.read_text(encoding="utf-8")
+
+    second_written = eee_export_module.export_inspect_logs(
+        log_path=log_path,
+        output_dir=tmp_path / "eee",
+    )
+    second_record = json.loads(second_written[0].read_text(encoding="utf-8"))
+    second_instance_path = second_written[0].with_suffix(".jsonl")
+    second_instance_rows = second_instance_path.read_text(encoding="utf-8")
+
+    assert first_written == second_written
+    assert first_instance_path == second_instance_path
+    assert first_record["evaluation_id"] == second_record["evaluation_id"]
+    assert first_record["retrieved_timestamp"] != second_record["retrieved_timestamp"]
+    assert json.loads(second_instance_rows.splitlines()[0])["evaluation_id"] == second_record["evaluation_id"]
+    assert first_instance_rows == second_instance_rows
 
 
 def test_cli_eee_tournament_dispatches(tmp_path: Path, monkeypatch, capsys) -> None:

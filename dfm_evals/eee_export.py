@@ -5,7 +5,6 @@ import json
 import math
 import re
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -384,17 +383,28 @@ def _write_record(
     model_id = str(model_info.get("id", "unknown"))
     model_dev, model_name = _split_model_id(model_id)
     benchmark_dir = _sanitize_path_component(benchmark_name)
-    file_uuid = str(uuid.uuid4())
+    evaluation_id = str(record.get("evaluation_id", "")).strip()
+    file_stem = _sha256_text(evaluation_id)[:20] if evaluation_id else str(time.time_ns())
 
     destination_dir = output_dir / benchmark_dir / model_dev / model_name
     destination_dir.mkdir(parents=True, exist_ok=True)
-    destination = destination_dir / f"{file_uuid}.json"
+    destination = destination_dir / f"{file_stem}.json"
 
     with destination.open("w", encoding="utf-8") as f:
         json.dump(_compact(dict(record)), f, ensure_ascii=False, indent=2)
         f.write("\n")
 
     return destination
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(
+        _compact(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
 
 
 def _sha256_text(value: str) -> str:
@@ -415,6 +425,16 @@ def _write_jsonl(path: Path, rows: list[Mapping[str, Any]]) -> None:
         for row in rows:
             f.write(json.dumps(_compact(dict(row)), ensure_ascii=False))
             f.write("\n")
+
+
+def _stable_evaluation_id(
+    *,
+    benchmark_name: str,
+    model_id: str,
+    payload: Any,
+) -> str:
+    digest = _sha256_text(_canonical_json(payload))[:20]
+    return f"{_sanitize_path_component(benchmark_name)}/{model_id}/{digest}"
 
 
 def _to_text(value: Any) -> str:
@@ -1452,8 +1472,17 @@ def export_euroeval_results(
         if library_version is None:
             library_version = eval_library_version or "unknown"
 
-        evaluation_id = (
-            f"{_sanitize_path_component(dataset_name)}/{model_info['id']}/{retrieved_timestamp}"
+        evaluation_id = _stable_evaluation_id(
+            benchmark_name=dataset_name,
+            model_id=str(model_info["id"]),
+            payload={
+                "dataset_name": dataset_name,
+                "task_name": task_name,
+                "model_id": model_info["id"],
+                "source_data": source_data,
+                "generation_config": generation_config,
+                "evaluation_results": evaluation_results,
+            },
         )
         record = _compact(
             {
@@ -1752,8 +1781,17 @@ def export_tournament_results(
             standing=standing,
             rank=rank,
         )
-        evaluation_id = (
-            f"{_sanitize_path_component(benchmark_name)}/{model_info['id']}/{retrieved_timestamp}"
+        evaluation_id = _stable_evaluation_id(
+            benchmark_name=benchmark_name,
+            model_id=str(model_info["id"]),
+            payload={
+                "benchmark_name": benchmark_name,
+                "model_id": model_info["id"],
+                "source_data": source_data,
+                "generation_config": generation_config,
+                "llm_scoring": llm_scoring,
+                "evaluation_results": evaluation_results,
+            },
         )
         record = _compact(
             {

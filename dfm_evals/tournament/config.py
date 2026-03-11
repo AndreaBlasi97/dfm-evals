@@ -104,6 +104,10 @@ class TournamentConfig(BaseModel):
     def validate_fields(self) -> Self:
         if self.min_pair_matches > self.max_pair_matches:
             raise ValueError("min_pair_matches cannot exceed max_pair_matches")
+        if self.side_swap and self.judge_max_samples < 2:
+            raise ValueError(
+                "judge_max_samples must be at least 2 when side_swap is enabled"
+            )
 
         duplicate_models = _duplicates(self.contestant_models)
         if len(duplicate_models) > 0:

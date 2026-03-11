@@ -745,10 +745,6 @@ def _canonical_outcomes_for_batch(
         if config.side_swap:
             if ab is not None and ba is not None:
                 decision = reconcile_side_swap(ab, ba, invalid_policy=config.invalid_policy)
-            elif ab is not None:
-                decision = canonicalize_side_decision(ab, "ab")
-            elif ba is not None:
-                decision = canonicalize_side_decision(ba, "ba")
             else:
                 decision = "INVALID"
         else:
