@@ -53,17 +53,42 @@ def test_optional_registry_import_is_ignored_when_package_is_missing(
     ]
 
 
-def test_optional_registry_import_propagates_missing_dependency(
+def test_optional_registry_import_ignores_missing_modal_dependency(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls: list[str] = []
+
     def fake_import_module(name: str) -> object:
+        calls.append(name)
         if name == "inspect_sandboxes._registry":
+            raise ModuleNotFoundError("No module named 'modal'", name="modal")
+        if name.startswith("inspect_sandboxes.modal."):
             raise ModuleNotFoundError("No module named 'modal'", name="modal")
         return object()
 
     monkeypatch.setattr(cli.importlib, "import_module", fake_import_module)
 
-    with pytest.raises(ModuleNotFoundError, match="modal"):
+    cli._ensure_registry_modules_loaded()
+
+    assert calls == [
+        "dfm_evals._registry",
+        "inspect_sandboxes._registry",
+        "inspect_harbor._registry",
+        "inspect_sandboxes.modal._compose",
+    ]
+
+
+def test_optional_registry_import_still_propagates_other_missing_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_import_module(name: str) -> object:
+        if name == "inspect_sandboxes._registry":
+            raise ModuleNotFoundError("No module named 'docker'", name="docker")
+        return object()
+
+    monkeypatch.setattr(cli.importlib, "import_module", fake_import_module)
+
+    with pytest.raises(ModuleNotFoundError, match="docker"):
         cli._ensure_registry_modules_loaded()
 
 
@@ -119,6 +144,22 @@ def test_patch_inspect_sandboxes_modal_context_dir_uses_build_context(
         ),
         "cpu": 1.0,
     }
+
+
+def test_patch_inspect_sandboxes_modal_context_dir_ignores_missing_modal_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_import_module(name: str) -> object:
+        calls.append(name)
+        raise ModuleNotFoundError("No module named 'modal'", name="modal")
+
+    monkeypatch.setattr(cli.importlib, "import_module", fake_import_module)
+
+    cli._patch_inspect_sandboxes_modal_context_dir()
+
+    assert calls == ["inspect_sandboxes.modal._compose"]
 
 
 def test_load_model_info_overrides_parses_context_lengths(

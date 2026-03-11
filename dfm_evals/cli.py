@@ -20,6 +20,9 @@ OPTIONAL_REGISTRY_MODULES = (
     "inspect_sandboxes._registry",
     "inspect_harbor._registry",
 )
+OPTIONAL_IMPORT_DEPENDENCIES = {
+    "inspect_sandboxes._registry": {"modal"},
+}
 
 
 @dataclass(frozen=True)
@@ -49,11 +52,27 @@ def _is_missing_optional_module(exc: ModuleNotFoundError, module_name: str) -> b
     return exc.name in acceptable_names
 
 
+def _is_ignored_optional_dependency(
+    exc: ModuleNotFoundError,
+    module_name: str,
+    *,
+    ignored_dependencies: set[str] | None = None,
+) -> bool:
+    if _is_missing_optional_module(exc, module_name):
+        return True
+    return exc.name in (ignored_dependencies or set())
+
+
 def _import_registry_module(module_name: str, *, required: bool) -> None:
     try:
         importlib.import_module(module_name)
     except ModuleNotFoundError as exc:
-        if required or not _is_missing_optional_module(exc, module_name):
+        ignored_dependencies = OPTIONAL_IMPORT_DEPENDENCIES.get(module_name)
+        if required or not _is_ignored_optional_dependency(
+            exc,
+            module_name,
+            ignored_dependencies=ignored_dependencies,
+        ):
             raise
 
 
@@ -93,7 +112,11 @@ def _patch_inspect_sandboxes_modal_context_dir() -> None:
         try:
             imported_modules[module_name] = importlib.import_module(module_name)
         except ModuleNotFoundError as exc:
-            if _is_missing_optional_module(exc, module_name):
+            if _is_ignored_optional_dependency(
+                exc,
+                module_name,
+                ignored_dependencies={"modal"},
+            ):
                 return
             raise
 
