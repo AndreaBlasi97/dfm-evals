@@ -306,9 +306,9 @@ def _parse_model_info(
             model_name = parts[2].split("#", 1)[0].split("@", 1)[0]
             model_id = f"{developer}/{model_name}"
         elif len(parts) == 2:
-            developer = parts[0]
+            developer = "unknown"
             model_name = parts[1].split("#", 1)[0].split("@", 1)[0]
-            model_id = f"{developer}/{model_name}"
+            model_id = model_name
         else:
             developer = "unknown"
             model_id = reference

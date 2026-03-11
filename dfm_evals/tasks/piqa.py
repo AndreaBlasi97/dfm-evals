@@ -8,7 +8,15 @@ from typing import Any
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
-from inspect_ai.scorer import CORRECT, INCORRECT, Score, Scorer, Target, accuracy, scorer
+from inspect_ai.scorer import (
+    CORRECT,
+    INCORRECT,
+    Score,
+    Scorer,
+    Target,
+    accuracy,
+    scorer,
+)
 from inspect_ai.solver import TaskState, generate
 
 DEFAULT_DATASET_PATH = Path(__file__).parent / "piqa" / "piqa-dan.json"
@@ -27,8 +35,8 @@ Mulighed B:
 
 Svar kun med A eller B."""
 
-_RE_FIRST_CHOICE = re.compile(r"^\s*([AaBb01])\b")
-_RE_ANY_CHOICE = re.compile(r"\b([AaBb01])\b")
+_RE_FIRST_CHOICE = re.compile(r"^\s*([AaBb])\b")
+_RE_ANY_CHOICE = re.compile(r"\b([AaBb])\b")
 
 
 @task(name="piqa")
@@ -168,7 +176,7 @@ def _extract_choice(text: str, solution0: str, solution1: str) -> str | None:
         match = _RE_ANY_CHOICE.search(text)
     if match is not None:
         token = match.group(1).lower()
-        if token in {"a", "0", "1"}:
+        if token == "a":
             return "A"
         if token == "b":
             return "B"

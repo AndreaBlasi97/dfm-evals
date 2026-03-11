@@ -345,6 +345,65 @@ def test_export_euroeval_results_keeps_stable_evaluation_ids_across_reruns(
     assert first_record["retrieved_timestamp"] != second_record["retrieved_timestamp"]
 
 
+def test_parse_model_info_treats_two_part_vllm_refs_as_unknown_developer() -> None:
+    modules = _modules()
+
+    model_info = modules["eee_export_module"]._parse_model_info(
+        "vllm/model-a",
+        fallback_vllm_version="0.8.5",
+    )
+
+    assert model_info == {
+        "name": "vllm/model-a",
+        "id": "model-a",
+        "developer": "unknown",
+        "inference_engine": {
+            "name": "vllm",
+            "version": "0.8.5",
+        },
+    }
+
+
+def test_export_euroeval_results_does_not_use_engine_name_as_developer(tmp_path: Path) -> None:
+    modules = _modules()
+    results_file = tmp_path / "euroeval-vllm.jsonl"
+    results_file.write_text(
+        json.dumps(
+            {
+                "dataset": "nlu-danish",
+                "task": "sentiment",
+                "model": "vllm/model-a",
+                "vllm_version": "0.8.5",
+                "results": {
+                    "total": {
+                        "test_accuracy": 0.75,
+                    },
+                    "raw": [{"correct": True}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    written = modules["eee_export_module"].export_euroeval_results(
+        results_file=results_file,
+        output_dir=tmp_path / "eee",
+    )
+
+    assert len(written) == 1
+    record = json.loads(written[0].read_text(encoding="utf-8"))
+
+    assert record["model_info"]["id"] == "model-a"
+    assert record["model_info"]["developer"] == "unknown"
+    assert record["model_info"]["inference_engine"] == {
+        "name": "vllm",
+        "version": "0.8.5",
+    }
+    assert written[0].parent.name == "model-a"
+    assert written[0].parent.parent.name == "unknown"
+
+
 def test_export_inspect_logs_overwrites_stable_paths_on_rerun(
     tmp_path: Path,
     monkeypatch,
