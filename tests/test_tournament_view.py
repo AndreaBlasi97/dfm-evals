@@ -55,6 +55,7 @@ def _modules() -> dict[str, object]:
     from dfm_evals.tournament.viewer import (
         TournamentViewDataSource,
         create_tournament_view_server,
+        export_tournament_view_html,
         list_tournament_view_runs,
         resolve_tournament_view_target,
     )
@@ -65,6 +66,7 @@ def _modules() -> dict[str, object]:
         "TournamentPrompt": TournamentPrompt,
         "TournamentStore": TournamentStore,
         "TournamentViewDataSource": TournamentViewDataSource,
+        "export_tournament_view_html": export_tournament_view_html,
         "create_tournament_view_server": create_tournament_view_server,
         "list_tournament_view_runs": list_tournament_view_runs,
         "match_id": match_id,
@@ -383,6 +385,47 @@ def test_view_http_server_serves_assets_and_api(tmp_path: Path) -> None:
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+def test_static_view_export_writes_single_html(tmp_path: Path) -> None:
+    modules = _modules()
+    config = _config(tmp_path)
+    ids = _seed_state(config)
+
+    result = modules["export_tournament_view_html"](config)
+
+    assert result.output_html == config.exports_dir / "viewer.html"
+    assert result.output_html.is_file()
+    html = result.output_html.read_text(encoding="utf-8")
+    assert "window.__TOURNAMENT_STATIC_DATA__" in html
+    assert "<style>" in html
+    assert '<script src="/app.js"></script>' not in html
+    assert "The snow keeps its own counsel." in html
+    assert "A has stronger imagery." in html
+    assert ids["match_1"] in html
+
+
+def test_cli_export_html_writes_static_view(tmp_path: Path) -> None:
+    modules = _modules()
+    config = _config(tmp_path)
+    _seed_state(config)
+    output_html = tmp_path / "report" / "creative-writing-viewer.html"
+
+    result = modules["tournament_main"](
+        [
+            "export-html",
+            config.run_dir.as_posix(),
+            "--output",
+            output_html.as_posix(),
+        ]
+    )
+
+    assert result == 0
+    assert output_html.is_file()
+    html = output_html.read_text(encoding="utf-8")
+    assert "window.__TOURNAMENT_STATIC_DATA__" in html
+    assert "Both summaries are equally clear." in html
+    assert "Static export" in html
 
 
 def test_view_target_resolution_supports_latest_job_id_and_label(tmp_path: Path) -> None:

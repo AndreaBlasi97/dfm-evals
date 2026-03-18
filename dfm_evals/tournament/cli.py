@@ -11,11 +11,13 @@ from ._cli_format import (
     format_run_result,
     format_status,
     format_update_config_result,
+    format_view_export_result,
     generation_result_payload,
     register_models_result_payload,
     run_result_payload,
     status_payload,
     update_config_result_payload,
+    view_export_result_payload,
     write_json_output,
 )
 from .exports import export_rankings
@@ -30,6 +32,7 @@ from .orchestrator import (
 )
 from .store import initialize_tournament_store
 from .viewer import (
+    export_tournament_view_html,
     format_tournament_view_runs,
     list_tournament_view_runs,
     resolve_tournament_view_target,
@@ -120,6 +123,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             export_rankings(args.target, output_dir=args.output_dir),
             payload_fn=export_result_payload,
             formatter_fn=format_export_result,
+            json_out=args.json_out,
+        )
+
+    if args.command == "export-html":
+        return _emit_result(
+            export_tournament_view_html(args.target, output_path=args.output),
+            payload_fn=view_export_result_payload,
+            formatter_fn=format_view_export_result,
             json_out=args.json_out,
         )
 
@@ -307,6 +318,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional output directory for export files",
     )
     export_parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to save JSON output",
+    )
+
+    export_html_parser = subparsers.add_parser(
+        "export-html",
+        help="Export a standalone tournament viewer HTML file",
+    )
+    export_html_parser.add_argument(
+        "target",
+        help="Config file path, run dir, or state dir path",
+    )
+    export_html_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output HTML path (default: <run>/exports/viewer.html)",
+    )
+    export_html_parser.add_argument(
         "--json-out",
         default=None,
         help="Optional path to save JSON output",

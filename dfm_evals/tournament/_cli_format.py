@@ -12,6 +12,7 @@ from .orchestrator import (
     UpdateConfigResult,
 )
 from .rating import ModelStanding
+from .viewer import TournamentViewExportResult
 
 
 def generation_result_payload(result: GenerationRunResult) -> dict[str, Any]:
@@ -74,6 +75,17 @@ def export_result_payload(result: ExportResult) -> dict[str, Any]:
             if result.pairwise_matrix_csv is not None
             else None
         ),
+    }
+
+
+def view_export_result_payload(result: TournamentViewExportResult) -> dict[str, Any]:
+    return {
+        "output_html": result.output_html.as_posix(),
+        "project_id": result.project_id,
+        "run_label": result.run_label,
+        "total_models": result.total_models,
+        "total_prompts": result.total_prompts,
+        "total_matches": result.total_matches,
     }
 
 
@@ -264,6 +276,20 @@ def format_export_result(result: ExportResult) -> str:
                 if result.pairwise_matrix_csv is not None
                 else "-",
             ),
+        ],
+    )
+
+
+def format_view_export_result(result: TournamentViewExportResult) -> str:
+    return _format_key_value_table(
+        "Static Viewer Export",
+        [
+            ("Output HTML", result.output_html.as_posix()),
+            ("Project ID", result.project_id or "-"),
+            ("Run Label", result.run_label),
+            ("Models", str(result.total_models)),
+            ("Prompts", str(result.total_prompts)),
+            ("Matches", str(result.total_matches)),
         ],
     )
 

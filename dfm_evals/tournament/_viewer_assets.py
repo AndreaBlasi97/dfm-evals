@@ -898,8 +898,17 @@ VIEWER_JS = dedent(
       },
     };
 
+    const staticData = window.__TOURNAMENT_STATIC_DATA__ || null;
+    if (staticData) {
+      state.autoRefreshMs = 0;
+    }
+
     function el(id) {
       return document.getElementById(id);
+    }
+
+    function isStaticMode() {
+      return staticData !== null;
     }
 
     function escapeHtml(value) {
@@ -948,7 +957,11 @@ VIEWER_JS = dedent(
     }
 
     async function fetchJson(path) {
-      const url = new URL(path, window.location.origin);
+      if (isStaticMode()) {
+        return resolveStaticJson(path);
+      }
+
+      const url = new URL(path, window.location.href);
       url.searchParams.set("_ts", String(Date.now()));
       const response = await fetch(url, {
         headers: {
@@ -960,6 +973,173 @@ VIEWER_JS = dedent(
         throw new Error(await response.text());
       }
       return response.json();
+    }
+
+    function parsePositiveInt(value, defaultValue) {
+      if (value === null || value === undefined || String(value).trim() === "") {
+        return defaultValue;
+      }
+      const parsed = Number.parseInt(String(value), 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+    }
+
+    function parseNonNegativeInt(value, defaultValue) {
+      if (value === null || value === undefined || String(value).trim() === "") {
+        return defaultValue;
+      }
+      const parsed = Number.parseInt(String(value), 10);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : defaultValue;
+    }
+
+    function staticMatchFilter(record, filters) {
+      const modelFilter = (filters.model || "").trim();
+      if (
+        modelFilter &&
+        ![
+          record.model_a_id,
+          record.model_b_id,
+          record.model_a_name,
+          record.model_b_name,
+        ].includes(modelFilter)
+      ) {
+        return false;
+      }
+
+      const opponentFilter = (filters.opponent || "").trim();
+      if (
+        opponentFilter &&
+        ![
+          record.model_a_id,
+          record.model_b_id,
+          record.model_a_name,
+          record.model_b_name,
+        ].includes(opponentFilter)
+      ) {
+        return false;
+      }
+
+      const promptFilter = (filters.prompt_id || "").trim();
+      if (promptFilter && promptFilter !== record.prompt_id) {
+        return false;
+      }
+
+      const categoryFilter = (filters.category || "").trim();
+      if (categoryFilter && categoryFilter !== (record.category || "")) {
+        return false;
+      }
+
+      const winnerFilter = (filters.winner || "").trim();
+      if (winnerFilter) {
+        if (["TIE", "INVALID"].includes(winnerFilter)) {
+          if (record.canonical_decision !== winnerFilter) {
+            return false;
+          }
+        } else if (![record.winner_model_id, record.winner_model_name].includes(winnerFilter)) {
+          return false;
+        }
+      }
+
+      const outcomeFilter = (filters.outcome || "").trim();
+      if (outcomeFilter === "decisive" && !["A", "B"].includes(record.canonical_decision)) {
+        return false;
+      }
+      if (outcomeFilter === "tie" && record.canonical_decision !== "TIE") {
+        return false;
+      }
+      if (outcomeFilter === "invalid" && record.canonical_decision !== "INVALID") {
+        return false;
+      }
+
+      const batchFilter = (filters.batch_id || "").trim();
+      if (batchFilter && batchFilter !== record.batch_id) {
+        return false;
+      }
+
+      return true;
+    }
+
+    function staticMatchesResponse(searchParams) {
+      const filters = Object.fromEntries(searchParams.entries());
+      const limit = parsePositiveInt(searchParams.get("limit"), 100);
+      const offset = parseNonNegativeInt(searchParams.get("offset"), 0);
+      const allMatches = staticData.matches?.items || [];
+      const items = allMatches.filter((record) => staticMatchFilter(record, filters));
+      return {
+        items: items.slice(offset, offset + limit),
+        total: items.length,
+        limit,
+        offset,
+      };
+    }
+
+    function requireStaticId(searchParams, key) {
+      const value = (searchParams.get(key) || "").trim();
+      if (!value) {
+        throw new Error(`Missing required query parameter: ${key}`);
+      }
+      return value;
+    }
+
+    function parseStaticRequest(path) {
+      const text = String(path || "");
+      const questionIndex = text.indexOf("?");
+      if (questionIndex === -1) {
+        return {
+          pathname: text || "/",
+          searchParams: new URLSearchParams(),
+        };
+      }
+      return {
+        pathname: text.slice(0, questionIndex) || "/",
+        searchParams: new URLSearchParams(text.slice(questionIndex + 1)),
+      };
+    }
+
+    function resolveStaticJson(path) {
+      const request = parseStaticRequest(path);
+      if (request.pathname === "/api/summary") {
+        return staticData.summary;
+      }
+      if (request.pathname === "/api/standings") {
+        return staticData.standings;
+      }
+      if (request.pathname === "/api/pairwise") {
+        return staticData.pairwise;
+      }
+      if (request.pathname === "/api/prompts") {
+        return staticData.prompts;
+      }
+      if (request.pathname === "/api/models") {
+        return staticData.models;
+      }
+      if (request.pathname === "/api/matches") {
+        return staticMatchesResponse(request.searchParams);
+      }
+      if (request.pathname === "/api/match") {
+        const matchId = requireStaticId(request.searchParams, "match_id");
+        const match = staticData.match_details?.[matchId];
+        if (!match) {
+          throw new Error(`Unknown match id: ${matchId}`);
+        }
+        return match;
+      }
+      if (request.pathname === "/api/prompt") {
+        const promptId = requireStaticId(request.searchParams, "prompt_id");
+        const prompt = staticData.prompt_details?.[promptId];
+        if (!prompt) {
+          throw new Error(`Unknown prompt id: ${promptId}`);
+        }
+        return prompt;
+      }
+      if (request.pathname === "/api/model") {
+        const modelId = requireStaticId(request.searchParams, "model_id");
+        const model = staticData.model_details?.[modelId];
+        if (!model) {
+          throw new Error(`Unknown model id: ${modelId}`);
+        }
+        return model;
+      }
+      throw new Error(`Unknown route: ${request.pathname}`);
     }
 
     function setStatus(message, kind = "neutral") {
@@ -985,6 +1165,10 @@ VIEWER_JS = dedent(
 
     function updateRefreshMeta() {
       const meta = el("refresh-meta");
+      if (isStaticMode()) {
+        meta.textContent = "Static export \u00b7 no live refresh";
+        return;
+      }
       if (!state.lastRefreshAt) {
         meta.textContent = isAutoRefreshPaused()
           ? "Auto refresh paused while detail view is open"
@@ -1741,16 +1925,18 @@ VIEWER_JS = dedent(
       bindStaticEvents();
       updateRefreshMeta();
       refreshAll().catch(handleError);
-      document.addEventListener("visibilitychange", () => {
-        if (document.visibilityState === "visible" && !isAutoRefreshPaused()) {
-          refreshAll({ silent: true }).catch(handleError);
-        }
-      });
-      window.setInterval(() => {
-        if (document.visibilityState === "visible" && !isAutoRefreshPaused()) {
-          refreshAll({ silent: true }).catch(handleError);
-        }
-      }, state.autoRefreshMs);
+      if (!isStaticMode()) {
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible" && !isAutoRefreshPaused()) {
+            refreshAll({ silent: true }).catch(handleError);
+          }
+        });
+        window.setInterval(() => {
+          if (document.visibilityState === "visible" && !isAutoRefreshPaused()) {
+            refreshAll({ silent: true }).catch(handleError);
+          }
+        }, state.autoRefreshMs);
+      }
     });
     """
 )

@@ -30,6 +30,18 @@ class TournamentViewRun:
     updated_at: float
 
 
+@dataclass(frozen=True)
+class TournamentViewExportResult:
+    """Generated standalone HTML viewer artifact."""
+
+    output_html: Path
+    project_id: str | None
+    run_label: str
+    total_models: int
+    total_prompts: int
+    total_matches: int
+
+
 class TournamentViewDataSource:
     """Read-only payload builder for the hosted tournament viewer."""
 
@@ -674,6 +686,35 @@ def serve_tournament_view(
     return 0
 
 
+def export_tournament_view_html(
+    target: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    output_path: str | Path | None = None,
+) -> TournamentViewExportResult:
+    """Export the hosted tournament viewer as a single standalone HTML file."""
+    source = TournamentViewDataSource(target)
+    payload = _build_static_view_payload(source)
+    summary = payload["summary"]
+    config = source._resolve_config()
+
+    output_html = (
+        Path(output_path)
+        if output_path is not None
+        else config.exports_dir / "viewer.html"
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(_render_static_view_html(payload), encoding="utf-8")
+
+    return TournamentViewExportResult(
+        output_html=output_html,
+        project_id=summary.get("project_id"),
+        run_label=str(summary.get("run_label") or config.run_label),
+        total_models=int(summary.get("total_models") or 0),
+        total_prompts=int(summary.get("total_prompts") or 0),
+        total_matches=int(summary.get("total_matches") or 0),
+    )
+
+
 def _make_handler(source: TournamentViewDataSource) -> type[BaseHTTPRequestHandler]:
     class TournamentViewHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -775,6 +816,64 @@ def _make_handler(source: TournamentViewDataSource) -> type[BaseHTTPRequestHandl
             self.wfile.write(body)
 
     return TournamentViewHandler
+
+
+def _build_static_view_payload(source: TournamentViewDataSource) -> dict[str, Any]:
+    summary = source.summary()
+    standings = source.standings()
+    pairwise = source.pairwise()
+    prompts = source.list_prompts()
+    models = source.list_models()
+    matches = source.list_matches({"limit": "1000000000"})
+
+    return {
+        "summary": summary,
+        "standings": standings,
+        "pairwise": pairwise,
+        "prompts": prompts,
+        "models": models,
+        "matches": matches,
+        "prompt_details": {
+            str(prompt["prompt_id"]): source.prompt_detail(str(prompt["prompt_id"]))
+            for prompt in prompts["items"]
+        },
+        "model_details": {
+            str(model["model_id"]): source.model_detail(str(model["model_id"]))
+            for model in models["items"]
+        },
+        "match_details": {
+            str(match["match_id"]): source.match_detail(str(match["match_id"]))
+            for match in matches["items"]
+        },
+    }
+
+
+def _render_static_view_html(payload: Mapping[str, Any]) -> str:
+    data_script = (
+        "<script>\n"
+        f"window.__TOURNAMENT_STATIC_DATA__ = {_html_safe_json(payload)};\n"
+        "</script>"
+    )
+    inline_script = f"<script>\n{VIEWER_JS}\n</script>"
+    return (
+        VIEWER_HTML.replace(
+            '<link rel="stylesheet" href="/app.css">',
+            f"<style>\n{VIEWER_CSS}\n</style>",
+        )
+        .replace(
+            '<script src="/app.js"></script>',
+            f"{data_script}\n{inline_script}",
+        )
+    )
+
+
+def _html_safe_json(payload: Mapping[str, Any]) -> str:
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
 
 
 def _maybe_run_by_label(

@@ -73,8 +73,10 @@ from .types import (
 )
 from .viewer import (
     TournamentViewDataSource,
+    TournamentViewExportResult,
     TournamentViewServer,
     create_tournament_view_server,
+    export_tournament_view_html,
     serve_tournament_view,
 )
 
@@ -106,6 +108,7 @@ __all__ = [
     "TournamentPrompt",
     "TournamentStore",
     "TournamentViewDataSource",
+    "TournamentViewExportResult",
     "TournamentViewServer",
     "TrueSkillRatingParams",
     "build_generation_task",
@@ -116,6 +119,7 @@ __all__ = [
     "check_hard_stops",
     "check_hard_stops_for_config",
     "create_tournament_view_server",
+    "export_tournament_view_html",
     "decision_valid_rate",
     "deterministic_id",
     "index_generation_responses",
