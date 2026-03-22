@@ -1,6 +1,7 @@
 from dfm_evals.tasks.multi_wiki_qa import (
     _extract_answer_texts,
     _is_valid_public_record,
+    _normalize_split_name,
     _records_with_unique_ids,
 )
 
@@ -45,3 +46,8 @@ def test_records_with_unique_ids_add_suffixes_and_fallback_ids() -> None:
         "shared__1",
         "da_test_2",
     ]
+
+
+def test_normalize_split_name_accepts_aliases() -> None:
+    assert _normalize_split_name("training") == "train"
+    assert _normalize_split_name("dev") == "val"

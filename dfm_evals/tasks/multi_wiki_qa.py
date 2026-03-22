@@ -4,7 +4,7 @@ import random
 import re
 import string
 from collections import Counter
-from typing import Any, Sequence
+from typing import Any, Literal
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample, hf_dataset
@@ -16,6 +16,7 @@ DEFAULT_LANGUAGE = "da"
 DEFAULT_SPLIT = "test"
 DEFAULT_MAX_ANSWER_WORDS = 3
 DEFAULT_MINI_SPLIT_SEED = 4242
+SplitName = Literal["train", "val", "test"]
 
 MIN_NUM_CHARS_IN_CONTEXT = 30
 MAX_NUM_CHARS_IN_CONTEXT = 5000
@@ -23,15 +24,6 @@ MIN_NUM_CHARS_IN_QUESTION = 10
 MAX_NUM_CHARS_IN_QUESTION = 150
 
 MINI_SPLIT_SIZES = {"train": 1024, "val": 256, "test": 2048}
-SPLIT_ALIASES = {
-    "train": "train",
-    "training": "train",
-    "val": "val",
-    "valid": "val",
-    "validation": "val",
-    "dev": "val",
-    "test": "test",
-}
 
 PROMPT_TEMPLATES = {
     "da": (
@@ -66,8 +58,6 @@ def multi_wiki_qa(
     if not language:
         raise ValueError("`language` must be a non-empty language code.")
     split = _normalize_split_name(split)
-    if not split:
-        raise ValueError("`split` must be a non-empty string.")
     if max_answer_words < 1:
         raise ValueError("`max_answer_words` must be >= 1.")
     if mini_split_seed < 0:
@@ -103,20 +93,28 @@ def multi_wiki_qa(
     return Task(dataset=dataset, scorer=multi_wiki_qa_scorer())
 
 
-def _normalize_split_name(split: str) -> str:
+def _normalize_split_name(split: str) -> SplitName:
     normalized = split.strip().lower()
-    if not normalized:
-        return ""
-    if normalized not in SPLIT_ALIASES:
-        allowed = sorted(set(SPLIT_ALIASES.keys()))
-        raise ValueError(f"Unsupported split '{split}'. Supported values: {allowed}")
-    return SPLIT_ALIASES[normalized]
+    match normalized:
+        case "train" | "training":
+            return "train"
+        case "val" | "valid" | "validation" | "dev":
+            return "val"
+        case "test":
+            return "test"
+        case "":
+            raise ValueError("`split` must be a non-empty string.")
+        case _:
+            raise ValueError(
+                f"Unsupported split '{split}'. Supported values: "
+                "['dev', 'test', 'train', 'training', 'val', 'valid', 'validation']"
+            )
 
 
 def _build_public_mini_dataset(
     source_dataset_id: str,
     language: str,
-    split: str,
+    split: SplitName,
     max_answer_words: int,
     mini_split_seed: int,
     shuffle: bool,
@@ -185,7 +183,7 @@ def _is_valid_public_record(record: dict[str, Any]) -> bool:
 
 
 def _select_mini_split_records(
-    records: list[dict[str, Any]], split: str, mini_split_seed: int
+    records: list[dict[str, Any]], split: SplitName, mini_split_seed: int
 ) -> list[dict[str, Any]]:
     required_total = sum(MINI_SPLIT_SIZES.values())
     if len(records) < required_total:
@@ -256,11 +254,7 @@ def _require_string(record: dict[str, Any], field: str) -> str:
 
 
 def _extract_answer_texts(record: dict[str, Any]) -> list[str]:
-    answers = record.get("answers")
-    if not isinstance(answers, dict):
-        raise ValueError("Record field 'answers' must be an object.")
-
-    raw_texts = _coerce_answer_texts(answers.get("text"))
+    raw_texts = _raw_answer_texts(record)
     if raw_texts is None:
         raise ValueError("Record field 'answers.text' must be a string or list.")
 
@@ -272,7 +266,7 @@ def _extract_answer_texts(record: dict[str, Any]) -> list[str]:
 
 
 def _records_with_unique_ids(
-    records: list[dict[str, Any]], language: str, split: str
+    records: list[dict[str, Any]], language: str, split: SplitName
 ) -> list[dict[str, Any]]:
     seen_ids: dict[str, int] = {}
     unique_records: list[dict[str, Any]] = []
@@ -296,7 +290,7 @@ def _records_with_unique_ids(
 
 
 def _base_record_id(
-    record: dict[str, Any], language: str, split: str, index: int
+    record: dict[str, Any], language: str, split: SplitName, index: int
 ) -> str:
     raw_id = record.get("id")
     if raw_id is None:
@@ -323,23 +317,20 @@ def _postprocess_samples(
     return samples
 
 
-def _raw_answer_texts(record: dict[str, Any]) -> Sequence[Any] | None:
+def _raw_answer_texts(record: dict[str, Any]) -> list[Any] | None:
     answers = record.get("answers")
     if not isinstance(answers, dict):
         return None
 
-    return _coerce_answer_texts(answers.get("text"))
-
-
-def _coerce_answer_texts(raw_texts: Any) -> Sequence[Any] | None:
+    raw_texts = answers.get("text")
     if isinstance(raw_texts, str):
         return [raw_texts]
-    if isinstance(raw_texts, Sequence):
+    if isinstance(raw_texts, list):
         return raw_texts
     return None
 
 
-def _clean_answer_texts(values: Sequence[Any]) -> list[str]:
+def _clean_answer_texts(values: list[Any]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
 

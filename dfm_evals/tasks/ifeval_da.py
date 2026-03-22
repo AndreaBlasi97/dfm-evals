@@ -209,25 +209,27 @@ def instruction_following() -> Scorer:
 
 
 def record_to_sample(record: dict[str, Any]) -> Sample:
-    cleaned_kwargs: list[dict[str, Any]] = []
-    instruction_id_list = record.get("instruction_id_list") or []
-    raw_kwargs = record.get("kwargs")
-    kwargs_list = raw_kwargs if isinstance(raw_kwargs, list) else []
+    prompt = record["prompt"]
+    key = record["key"]
+    instruction_id_list = record["instruction_id_list"]
+    kwargs_list = record["kwargs"]
+    assert isinstance(prompt, str)
+    assert isinstance(key, str)
+    assert isinstance(instruction_id_list, list)
+    assert isinstance(kwargs_list, list)
+    assert len(kwargs_list) == len(instruction_id_list)
 
-    for index in range(len(instruction_id_list)):
-        source_kwargs = (
-            kwargs_list[index]
-            if index < len(kwargs_list) and isinstance(kwargs_list[index], dict)
-            else {}
-        )
-        kwargs = {k: v for k, v in source_kwargs.items() if v is not None}
-        cleaned_kwargs.append(kwargs)
+    cleaned_kwargs: list[dict[str, Any]] = []
+    for instruction_id, kwargs in zip(instruction_id_list, kwargs_list, strict=True):
+        assert isinstance(instruction_id, str)
+        assert isinstance(kwargs, dict)
+        cleaned_kwargs.append({k: v for k, v in kwargs.items() if v is not None})
 
     return Sample(
-        id=record["key"],
-        input=record["prompt"],
+        id=key,
+        input=prompt,
         metadata={
-            "prompt": record["prompt"],
+            "prompt": prompt,
             "instruction_id_list": instruction_id_list,
             "kwargs": cleaned_kwargs,
         },

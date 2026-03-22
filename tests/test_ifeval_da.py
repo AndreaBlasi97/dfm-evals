@@ -2,6 +2,10 @@ import importlib
 import sys
 import types
 
+import pytest
+
+from dfm_evals.tasks.ifeval_da import record_to_sample
+
 
 def _response_language_checker(monkeypatch) -> type[object]:
     ifeval_da_module = importlib.import_module("dfm_evals.tasks.ifeval_da")
@@ -64,3 +68,15 @@ def test_response_language_checker_accepts_matching_language(monkeypatch) -> Non
     checker.build_description(language="da")
 
     assert checker.check_following("Hej verden") is True
+
+
+def test_record_to_sample_requires_one_kwargs_entry_per_instruction() -> None:
+    with pytest.raises(AssertionError):
+        record_to_sample(
+            {
+                "key": "sample-1",
+                "prompt": "Hello",
+                "instruction_id_list": ["a"],
+                "kwargs": [],
+            }
+        )
