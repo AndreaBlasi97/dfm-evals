@@ -97,15 +97,13 @@ def _load_task_configs(
     if not isinstance(task_configs, list) or len(task_configs) == 0:
         raise PrerequisiteError("eval.yaml does not include non-empty 'tasks' list.")
 
-    validated_task_configs: list[dict[str, Any]] = []
     for idx, task_config in enumerate(task_configs):
         if not isinstance(task_config, dict):
             raise PrerequisiteError(
                 f"Task config #{idx} in eval.yaml must be a mapping."
             )
-        validated_task_configs.append(task_config)
 
-    return validated_task_configs
+    return task_configs
 
 
 def _build_hf_task(
@@ -281,107 +279,84 @@ def _record_matches_filter(record: DatasetRecord, filter: Any) -> bool:
     if not isinstance(filter, dict):
         raise PrerequisiteError("Task `filters` must be a mapping.")
 
-    logical_result = _logical_filter_result(record, filter)
-    if logical_result is not None:
-        return logical_result
-
-    column, op, value = _filter_condition_parts(filter)
-
-    record_value = record.get(column, _MISSING)
-
-    if op == "exists":
-        return record_value is not _MISSING
-    if op == "is_null":
-        return record_value is None
-    if op == "not_null":
-        return record_value is not _MISSING and record_value is not None
-
-    if record_value is _MISSING:
-        return False
-
-    if op == "eq":
-        return record_value == value
-    if op == "ne":
-        return record_value != value
-    if op == "in":
-        return _membership_filter_result(op, record_value, value)
-    if op == "not_in":
-        return _membership_filter_result(op, record_value, value)
-    if op == "between":
-        return _between_filter_result(column, record_value, value)
-    if op == "contains":
-        return _contains_filter_result(op, record_value, value)
-    if op == "not_contains":
-        return _contains_filter_result(op, record_value, value)
-    if op in {"gt", "gte", "lt", "lte"}:
-        return _relational_filter_result(column, op, record_value, value)
-
-    raise PrerequisiteError(f"Unsupported filter operation: {op}")
-
-
-def _logical_filter_result(
-    record: DatasetRecord, filter: dict[str, Any]
-) -> bool | None:
     if "all" in filter:
-        children = _filter_children(filter["all"], "all")
+        children = filter["all"]
+        if not isinstance(children, list) or len(children) == 0:
+            raise PrerequisiteError("'all' filter must contain at least one condition.")
         return all(_record_matches_filter(record, child) for child in children)
-
     if "any" in filter:
-        children = _filter_children(filter["any"], "any")
+        children = filter["any"]
+        if not isinstance(children, list) or len(children) == 0:
+            raise PrerequisiteError("'any' filter must contain at least one condition.")
         return any(_record_matches_filter(record, child) for child in children)
-
     if "not" in filter:
         return not _record_matches_filter(record, filter["not"])
 
-    return None
-
-
-def _filter_children(children: Any, name: str) -> list[Any]:
-    if not isinstance(children, list) or len(children) == 0:
-        raise PrerequisiteError(f"'{name}' filter must contain at least one condition.")
-    return children
-
-
-def _filter_condition_parts(filter: dict[str, Any]) -> tuple[str, str, Any]:
     column = filter.get("column")
     op = filter.get("op")
     value = filter.get("value")
-
     if not isinstance(column, str) or not isinstance(op, str):
         raise PrerequisiteError(
             "Filter condition must include string 'column' and 'op'."
         )
 
-    return column, op, value
-
-
-def _membership_filter_result(op: str, record_value: Any, value: Any) -> bool:
-    if not isinstance(value, (list, tuple, set)):
-        raise PrerequisiteError(f"Filter op '{op}' requires list/tuple/set value.")
-    if op == "in":
-        return record_value in value
-    return record_value not in value
-
-
-def _between_filter_result(column: str, record_value: Any, value: Any) -> bool:
-    if not isinstance(value, (list, tuple)) or len(value) != 2:
-        raise PrerequisiteError("Filter op 'between' requires [low, high].")
-
-    low, high = value
-    try:
-        return low <= record_value <= high
-    except TypeError as exc:
-        raise PrerequisiteError(
-            f"Filter op 'between' cannot compare column '{column}' "
-            f"value {record_value!r} against bounds {value!r}."
-        ) from exc
-
-
-def _contains_filter_result(op: str, record_value: Any, value: Any) -> bool:
-    contains = _contains_value(record_value, value)
-    if op == "contains":
-        return contains
-    return not contains
+    record_value = record.get(column, _MISSING)
+    match op:
+        case "exists":
+            return record_value is not _MISSING
+        case "is_null":
+            return record_value is None
+        case "not_null":
+            return record_value is not _MISSING and record_value is not None
+        case "eq":
+            return record_value is not _MISSING and record_value == value
+        case "ne":
+            return record_value is not _MISSING and record_value != value
+        case "in" | "not_in":
+            if record_value is _MISSING:
+                return False
+            if not isinstance(value, (list, tuple, set)):
+                raise PrerequisiteError(
+                    f"Filter op '{op}' requires list/tuple/set value."
+                )
+            contains = record_value in value
+            return contains if op == "in" else not contains
+        case "between":
+            if record_value is _MISSING:
+                return False
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise PrerequisiteError("Filter op 'between' requires [low, high].")
+            low, high = value
+            try:
+                return low <= record_value <= high
+            except TypeError as exc:
+                raise PrerequisiteError(
+                    f"Filter op 'between' cannot compare column '{column}' "
+                    f"value {record_value!r} against bounds {value!r}."
+                ) from exc
+        case "contains" | "not_contains":
+            if record_value is _MISSING:
+                return False
+            contains = _contains_value(record_value, value)
+            return contains if op == "contains" else not contains
+        case "gt" | "gte" | "lt" | "lte":
+            if record_value is _MISSING:
+                return False
+            try:
+                if op == "gt":
+                    return record_value > value
+                if op == "gte":
+                    return record_value >= value
+                if op == "lt":
+                    return record_value < value
+                return record_value <= value
+            except TypeError as exc:
+                raise PrerequisiteError(
+                    f"Filter op '{op}' cannot compare column '{column}' "
+                    f"value {record_value!r} against {value!r}."
+                ) from exc
+        case _:
+            raise PrerequisiteError(f"Unsupported filter operation: {op}")
 
 
 def _contains_value(record_value: Any, value: Any) -> bool:
@@ -390,24 +365,6 @@ def _contains_value(record_value: Any, value: Any) -> bool:
     if isinstance(record_value, (list, tuple, set, dict)):
         return value in record_value
     return False
-
-
-def _relational_filter_result(
-    column: str, op: str, record_value: Any, value: Any
-) -> bool:
-    try:
-        if op == "gt":
-            return record_value > value
-        if op == "gte":
-            return record_value >= value
-        if op == "lt":
-            return record_value < value
-        return record_value <= value
-    except TypeError as exc:
-        raise PrerequisiteError(
-            f"Filter op '{op}' cannot compare column '{column}' "
-            f"value {record_value!r} against {value!r}."
-        ) from exc
 
 
 def _record_to_sample_hf(record: DatasetRecord, field_spec: HFFieldSpec) -> Sample:
