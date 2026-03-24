@@ -27,6 +27,7 @@ Main areas:
 Current local tasks include:
 
 - `dfm_evals/multi_wiki_qa`
+- `dfm_evals/gec_dala`
 - `dfm_evals/bfcl-v1`
 - `dfm_evals/bfcl-v1-da`
 - `dfm_evals/ifeval-da`
