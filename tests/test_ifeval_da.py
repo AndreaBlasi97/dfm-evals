@@ -70,13 +70,40 @@ def test_response_language_checker_accepts_matching_language(monkeypatch) -> Non
     assert checker.check_following("Hej verden") is True
 
 
-def test_record_to_sample_requires_one_kwargs_entry_per_instruction() -> None:
+def test_record_to_sample_pads_missing_kwargs_entries() -> None:
+    sample = record_to_sample(
+        {
+            "key": "sample-1",
+            "prompt": "Hello",
+            "instruction_id_list": ["a", "b"],
+            "kwargs": [{"optional": None, "required": "x"}],
+        }
+    )
+
+    assert sample.metadata["kwargs"] == [{"required": "x"}, {}]
+
+
+def test_record_to_sample_rejects_extra_kwargs_entries() -> None:
     with pytest.raises(AssertionError):
         record_to_sample(
             {
                 "key": "sample-1",
                 "prompt": "Hello",
                 "instruction_id_list": ["a"],
-                "kwargs": [],
+                "kwargs": [{}, {}],
             }
         )
+
+
+def test_record_to_sample_coerces_integer_key_to_string() -> None:
+    sample = record_to_sample(
+        {
+            "key": 1000,
+            "prompt": "Hello",
+            "instruction_id_list": ["a"],
+            "kwargs": [{"optional": None, "required": "x"}],
+        }
+    )
+
+    assert sample.id == "1000"
+    assert sample.metadata["kwargs"] == [{"required": "x"}]

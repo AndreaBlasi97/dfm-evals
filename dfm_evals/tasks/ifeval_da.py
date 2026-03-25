@@ -214,19 +214,31 @@ def record_to_sample(record: dict[str, Any]) -> Sample:
     instruction_id_list = record["instruction_id_list"]
     kwargs_list = record["kwargs"]
     assert isinstance(prompt, str)
-    assert isinstance(key, str)
+    assert isinstance(key, (str, int))
     assert isinstance(instruction_id_list, list)
     assert isinstance(kwargs_list, list)
-    assert len(kwargs_list) == len(instruction_id_list)
+    sample_id = str(key)
+    assert len(kwargs_list) <= len(instruction_id_list)
+
+    # Some rows omit kwargs entries for instructions that do not require
+    # arguments, so pad them with empty dicts to preserve per-instruction
+    # alignment for the evaluation library.
+    normalized_kwargs: list[Any] = list(kwargs_list)
+    if len(normalized_kwargs) < len(instruction_id_list):
+        normalized_kwargs.extend(
+            {} for _ in range(len(instruction_id_list) - len(normalized_kwargs))
+        )
 
     cleaned_kwargs: list[dict[str, Any]] = []
-    for instruction_id, kwargs in zip(instruction_id_list, kwargs_list, strict=True):
+    for instruction_id, kwargs in zip(
+        instruction_id_list, normalized_kwargs, strict=True
+    ):
         assert isinstance(instruction_id, str)
         assert isinstance(kwargs, dict)
         cleaned_kwargs.append({k: v for k, v in kwargs.items() if v is not None})
 
     return Sample(
-        id=key,
+        id=sample_id,
         input=prompt,
         metadata={
             "prompt": prompt,
