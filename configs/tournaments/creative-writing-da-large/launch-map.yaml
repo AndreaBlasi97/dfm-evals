@@ -47,6 +47,14 @@ contestants:
     default_chat_template_kwargs:
       enable_thinking: false
     trust_remote_code: true
+  vllm/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
+    mode: local_vllm
+    model: /scratch/project_465002183/.cache/huggingface/local-upcasts/nvidia--NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4-bf16
+    tp: 8
+    dp: 1
+    default_chat_template_kwargs:
+      enable_thinking: false
+    trust_remote_code: true
   vllm/mistralai/Mistral-Small-4-119B-2603-bf16:
     mode: local_vllm
     model: /flash/project_465002183/.cache/huggingface/local-upcasts/mistralai--Mistral-Small-4-119B-2603-bf16

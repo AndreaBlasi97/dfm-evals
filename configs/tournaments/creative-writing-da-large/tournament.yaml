@@ -7,6 +7,7 @@ contestant_models:
   - vllm/google-gemma-3-4b-pt-hermes-final
   - vllm/local/hermes-4n-full-20260306-lr3e5-warmup50
   - vllm/google/gemma-3-12b-it
+  - vllm/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 
 prompt_source:
   path: ../data/creative_writing_da_small.jsonl
