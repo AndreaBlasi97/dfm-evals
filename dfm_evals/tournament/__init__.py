@@ -4,7 +4,7 @@ from .config import (
     TrueSkillRatingParams,
     load_tournament_config,
 )
-from .exports import ExportResult, export_rankings
+from .exports import ExportResult, PromptResponsesExportResult, export_prompt_responses, export_rankings
 from .generation import GenerationRunResult, build_generation_task, run_generation
 from .indexer import ResponseIndexReport, index_generation_responses
 from .judge_task import (
@@ -87,6 +87,7 @@ __all__ = [
     "ModelRating",
     "GenerationRunResult",
     "ExportResult",
+    "PromptResponsesExportResult",
     "JudgeMatch",
     "JudgeRunResult",
     "AddModelsResult",
@@ -132,6 +133,7 @@ __all__ = [
     "parse_judge_decision",
     "probability_higher",
     "export_rankings",
+    "export_prompt_responses",
     "reconcile_side_swap",
     "render_judge_prompt",
     "schedule_match_batch",

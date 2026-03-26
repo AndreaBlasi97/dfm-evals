@@ -4,6 +4,7 @@ from typing import Any, Callable, Sequence, TypeVar
 from ._cli_format import (
     add_models_result_payload,
     export_result_payload,
+    format_prompt_responses_export_result,
     format_add_models_result,
     format_export_result,
     format_generation_result,
@@ -16,11 +17,12 @@ from ._cli_format import (
     register_models_result_payload,
     run_result_payload,
     status_payload,
+    prompt_responses_export_result_payload,
     update_config_result_payload,
     view_export_result_payload,
     write_json_output,
 )
-from .exports import export_rankings
+from .exports import export_prompt_responses, export_rankings
 from .generation import run_generation
 from .orchestrator import (
     add_models,
@@ -123,6 +125,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             export_rankings(args.target, output_dir=args.output_dir),
             payload_fn=export_result_payload,
             formatter_fn=format_export_result,
+            json_out=args.json_out,
+        )
+
+    if args.command == "export-prompts":
+        return _emit_result(
+            export_prompt_responses(args.target, output_path=args.output),
+            payload_fn=prompt_responses_export_result_payload,
+            formatter_fn=format_prompt_responses_export_result,
             json_out=args.json_out,
         )
 
@@ -318,6 +328,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional output directory for export files",
     )
     export_parser.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to save JSON output",
+    )
+
+    export_prompts_parser = subparsers.add_parser(
+        "export-prompts",
+        help="Export prompts with current responses and no judge outputs",
+    )
+    export_prompts_parser.add_argument(
+        "target",
+        help="Config file path, run dir, or state dir path",
+    )
+    export_prompts_parser.add_argument(
+        "--output",
+        default=None,
+        help="Optional output JSON path (default: <run>/exports/prompt_responses.json)",
+    )
+    export_prompts_parser.add_argument(
         "--json-out",
         default=None,
         help="Optional path to save JSON output",

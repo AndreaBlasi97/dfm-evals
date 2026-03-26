@@ -25,6 +25,14 @@ class ExportResult(BaseModel):
     pairwise_matrix_csv: Path | None = None
 
 
+class PromptResponsesExportResult(BaseModel):
+    """Path and summary for prompt/response export artifacts."""
+
+    output_path: Path
+    prompt_count: int
+    model_count: int
+
+
 @dataclass
 class TournamentExportSnapshot:
     """Resolved tournament state used by export backends."""
@@ -151,6 +159,146 @@ def export_rankings(
         rankings_json=rankings_json,
         rankings_csv=rankings_csv,
         pairwise_matrix_csv=pairwise_matrix_csv,
+    )
+
+
+def export_prompt_responses(
+    config_or_state: TournamentConfig | Mapping[str, Any] | str | Path,
+    *,
+    output_path: str | Path | None = None,
+) -> PromptResponsesExportResult:
+    """Export prompts with current responses and no judge outputs."""
+    config = resolve_stateful_tournament_config(config_or_state)
+    status = tournament_status(config)
+    export_path = (
+        Path(output_path)
+        if output_path is not None
+        else config.exports_dir / "prompt_responses.json"
+    )
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+
+    prompt_order = {prompt.id: index for index, prompt in enumerate(config.prompts)}
+    model_order = {
+        model_name: index for index, model_name in enumerate(config.contestant_models)
+    }
+
+    with TournamentStore(_require_state_dir(config)) as store:
+        conn = store.connection()
+        prompt_rows = conn.execute(
+            """
+            SELECT prompt_id, prompt_text, metadata_json
+            FROM prompts
+            """
+        ).fetchall()
+        model_rows = conn.execute(
+            """
+            SELECT model_id, model_name
+            FROM models
+            WHERE active = 1
+            """
+        ).fetchall()
+        response_rows = conn.execute(
+            """
+            SELECT model_id, prompt_id, response_id, response_text, source_log
+            FROM responses
+            WHERE current = 1
+            """
+        ).fetchall()
+
+    ordered_prompts = sorted(
+        prompt_rows,
+        key=lambda row: (
+            prompt_order.get(str(row["prompt_id"]), len(prompt_order)),
+            str(row["prompt_id"]),
+        ),
+    )
+    ordered_models = sorted(
+        model_rows,
+        key=lambda row: (
+            model_order.get(str(row["model_name"]), len(model_order)),
+            str(row["model_name"]),
+        ),
+    )
+    responses_by_key = {
+        (str(row["prompt_id"]), str(row["model_id"])): row for row in response_rows
+    }
+
+    prompts_payload: list[dict[str, Any]] = []
+    for prompt_row in ordered_prompts:
+        metadata = _parse_metadata(prompt_row["metadata_json"])
+        prompt_id = str(prompt_row["prompt_id"])
+        responses_payload = []
+        response_count = 0
+        for model_row in ordered_models:
+            response_row = responses_by_key.get(
+                (prompt_id, str(model_row["model_id"])),
+            )
+            if response_row is not None:
+                response_count += 1
+            responses_payload.append(
+                {
+                    "model_id": str(model_row["model_id"]),
+                    "model_name": str(model_row["model_name"]),
+                    "response_id": (
+                        str(response_row["response_id"])
+                        if response_row is not None and response_row["response_id"] is not None
+                        else None
+                    ),
+                    "response_text": (
+                        str(response_row["response_text"])
+                        if response_row is not None and response_row["response_text"] is not None
+                        else None
+                    ),
+                    "source_log": (
+                        str(response_row["source_log"])
+                        if response_row is not None and response_row["source_log"] is not None
+                        else None
+                    ),
+                }
+            )
+
+        prompts_payload.append(
+            {
+                "prompt_id": prompt_id,
+                "prompt_text": str(prompt_row["prompt_text"]),
+                "title": _first_metadata_value(metadata, ("title", "name")) or prompt_id,
+                "category": _first_metadata_value(
+                    metadata,
+                    ("category", "task", "domain"),
+                ),
+                "source": _first_metadata_value(
+                    metadata,
+                    ("source", "source_file", "dataset"),
+                ),
+                "metadata": metadata,
+                "response_count": response_count,
+                "expected_responses": len(ordered_models),
+                "responses": responses_payload,
+            }
+        )
+
+    export_path.write_text(
+        json.dumps(
+            {
+                "project_id": status.project_id,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "run_status": status.run_status,
+                "total_prompts": len(prompts_payload),
+                "total_models": len(ordered_models),
+                "prompts": prompts_payload,
+            },
+            indent=2,
+            sort_keys=False,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    return PromptResponsesExportResult(
+        output_path=export_path,
+        prompt_count=len(prompts_payload),
+        model_count=len(ordered_models),
     )
 
 
@@ -284,6 +432,8 @@ def _write_pairwise_matrix_csv(
 
 def _model_names_by_id(store: TournamentStore) -> dict[str, str]:
     return store.active_model_names_by_id()
+
+
 def _require_state_dir(config: TournamentConfig) -> Path:
     return config.state_dir
 
@@ -293,3 +443,28 @@ def _as_decision(value: str) -> Decision:
     if normalized in ("A", "B", "TIE", "INVALID"):
         return normalized  # type: ignore[return-value]
     return "INVALID"
+
+
+def _parse_metadata(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or value.strip() == "":
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _first_metadata_value(metadata: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        value = metadata.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text != "":
+            return text
+    return None

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from .exports import ExportResult
+from .exports import ExportResult, PromptResponsesExportResult
 from .generation import GenerationRunResult
 from .orchestrator import (
     AddModelsResult,
@@ -75,6 +75,16 @@ def export_result_payload(result: ExportResult) -> dict[str, Any]:
             if result.pairwise_matrix_csv is not None
             else None
         ),
+    }
+
+
+def prompt_responses_export_result_payload(
+    result: PromptResponsesExportResult,
+) -> dict[str, Any]:
+    return {
+        "output_path": result.output_path.as_posix(),
+        "prompt_count": result.prompt_count,
+        "model_count": result.model_count,
     }
 
 
@@ -290,6 +300,19 @@ def format_view_export_result(result: TournamentViewExportResult) -> str:
             ("Models", str(result.total_models)),
             ("Prompts", str(result.total_prompts)),
             ("Matches", str(result.total_matches)),
+        ],
+    )
+
+
+def format_prompt_responses_export_result(
+    result: PromptResponsesExportResult,
+) -> str:
+    return _format_key_value_table(
+        "Prompt Response Export",
+        [
+            ("Output JSON", result.output_path.as_posix()),
+            ("Prompts", str(result.prompt_count)),
+            ("Models", str(result.model_count)),
         ],
     )
 
