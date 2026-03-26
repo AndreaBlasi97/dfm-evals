@@ -1,3 +1,8 @@
+"""Run this task with:
+
+uv run inspect eval dfm_evals/tasks/danske_talemaader.py --model openai/gpt-5-mini -T judge_model=openai/gpt-5-mini --limit 1
+"""
+
 from __future__ import annotations
 
 import csv
