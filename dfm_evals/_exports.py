@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib import import_module
 
 REGISTRY_EXPORTS = {
-    "danske_talemaader": "dfm_evals.tasks.danske_talemaader:danske_talemaader",
+    "danske_talemaader": "dfm_evals.tasks.talemaader.task:danske_talemaader",
     "multi_wiki_qa": "dfm_evals.tasks.multi_wiki_qa:multi_wiki_qa",
     "gec_dala": "dfm_evals.tasks.gec_dala:gec_dala",
     "bfcl": "dfm_evals.tasks.bfcl.bfcl:bfcl",

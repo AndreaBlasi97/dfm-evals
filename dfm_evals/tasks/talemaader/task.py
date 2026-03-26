@@ -1,6 +1,6 @@
 """Run this task with:
 
-uv run inspect eval dfm_evals/tasks/danske_talemaader.py --model openai/gpt-5-mini -T judge_model=openai/gpt-5-mini --limit 1
+uv run inspect eval dfm_evals/tasks/talemaader/task.py --model openai/gpt-5-mini -T judge_model=openai/gpt-5-mini --limit 1
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
 from inspect_ai.solver import generate
 
-from dfm_evals.prompts import JUDGE_PROMPT_TEMPLATE_DA
 from dfm_evals.scorers.llm_judge import llm_judge
+from dfm_evals.tasks.talemaader.prompts import JUDGE_PROMPT_TEMPLATE_DA
 
 DEFAULT_SPLIT = "test"
 DEFAULT_SPLIT_SEED = 4242
