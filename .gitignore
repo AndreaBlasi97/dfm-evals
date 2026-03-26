@@ -10,3 +10,5 @@ _logs/
 logs/
 gorilla/
 .deferred/
+
+.vscode/

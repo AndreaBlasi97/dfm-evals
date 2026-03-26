@@ -32,6 +32,7 @@ Current local tasks include:
 - `dfm_evals/bfcl-v1-da`
 - `dfm_evals/ifeval-da`
 - `dfm_evals/piqa`
+- `dfm_evals/danske-talemaader`
 
 ## Install
 
