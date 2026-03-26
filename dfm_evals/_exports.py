@@ -12,7 +12,6 @@ REGISTRY_EXPORTS = {
     "piqa": "dfm_evals.tasks.piqa:piqa",
     "gleu": "dfm_evals.scorers.gleu:gleu",
     "comet": "dfm_evals.scorers.comet:comet",
-    "llm_judge": "dfm_evals.scorers.llm_judge:llm_judge",
 }
 
 TOP_LEVEL_EXPORTS = (
@@ -23,7 +22,6 @@ TOP_LEVEL_EXPORTS = (
     "ifeval_da",
     "gleu",
     "comet",
-    "llm_judge",
 )
 
 TASK_EXPORTS = tuple(

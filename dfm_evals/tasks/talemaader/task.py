@@ -15,17 +15,15 @@ from zipfile import ZipFile
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import MemoryDataset, Sample
+from inspect_ai.scorer import model_graded_fact
 from inspect_ai.solver import generate
 
-from dfm_evals.scorers.llm_judge import llm_judge
-from dfm_evals.tasks.talemaader.prompts import JUDGE_PROMPT_TEMPLATE_DA
+from dfm_evals.tasks.talemaader.prompts import JUDGE_INSTRUCTIONS_DA, JUDGE_TEMPLATE_DA
 
 DEFAULT_SPLIT = "test"
 DEFAULT_SPLIT_SEED = 4242
 DEFAULT_TRAIN_SIZE = 128
 DEFAULT_VAL_SIZE = 64
-DEFAULT_JUDGE_MIN_SCORE = 0
-DEFAULT_JUDGE_MAX_SCORE = 4
 
 SOURCE_ZIP_URL = (
     "https://sprogtek-ressources.digst.govcloud.dk/1000%20danske%20talemaader"
@@ -45,10 +43,6 @@ def danske_talemaader(
     split: str = DEFAULT_SPLIT,
     judge_model: str | None = None,
     judge_model_role: str | None = "grader",
-    judge_temperature: float = 0.0,
-    judge_max_tokens: int = 512,
-    judge_min_score: int = DEFAULT_JUDGE_MIN_SCORE,
-    judge_max_score: int = DEFAULT_JUDGE_MAX_SCORE,
     source_zip_url: str = SOURCE_ZIP_URL,
     source_csv_name: str = SOURCE_CSV_NAME,
     shuffle: bool = False,
@@ -61,8 +55,6 @@ def danske_talemaader(
         raise ValueError("Either `judge_model` or `judge_model_role` must be provided.")
     if judge_model is not None and not judge_model.strip():
         raise ValueError("`judge_model` must be None or a non-empty string.")
-    if judge_max_score <= judge_min_score:
-        raise ValueError("`judge_max_score` must be greater than `judge_min_score`.")
     if not source_zip_url.strip():
         raise ValueError("`source_zip_url` must be a non-empty string.")
     if not source_csv_name.strip():
@@ -79,15 +71,12 @@ def danske_talemaader(
     return Task(
         dataset=dataset,
         solver=[generate()],
-        scorer=llm_judge(
+        scorer=model_graded_fact(
+            template=JUDGE_TEMPLATE_DA,
+            instructions=JUDGE_INSTRUCTIONS_DA,
+            partial_credit=True,
             model=judge_model,
             model_role=judge_model_role,
-            temperature=judge_temperature,
-            max_tokens=judge_max_tokens,
-            prompt_template=JUDGE_PROMPT_TEMPLATE_DA,
-            prompt_fields={"talemaade_udtryk": "talemaade_udtryk"},
-            min_score=judge_min_score,
-            max_score=judge_max_score,
         ),
     )
 
@@ -205,7 +194,7 @@ def record_to_sample(record: dict[str, Any]) -> Sample:
         id=sample_id if sample_id else None,
         input=_build_prompt(talemaade_udtryk),
         target=[meaning],
-        metadata={"talemaade_udtryk": talemaade_udtryk, "meaning": meaning},
+        metadata={"talemaade_udtryk": talemaade_udtryk},
     )
 
 
