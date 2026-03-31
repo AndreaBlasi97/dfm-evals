@@ -9,6 +9,9 @@ contestants:
   vllm/google/gemma-3-4b-it:
     mode: local_vllm
     model: google/gemma-3-4b-it
+  vllm/google/gemma-3-12b-it:
+    mode: local_vllm
+    model: google/gemma-3-12b-it
   vllm/Qwen/Qwen2.5-7B-Instruct:
     mode: local_vllm
     model: Qwen/Qwen2.5-7B-Instruct

@@ -3,6 +3,7 @@ project_id: tournament-creative-writing-da-smoke
 
 contestant_models:
   - vllm/google/gemma-3-4b-it
+  - vllm/google/gemma-3-12b-it
   - vllm/Qwen/Qwen2.5-7B-Instruct
   - vllm/google-gemma-3-4b-pt-hermes-final
 

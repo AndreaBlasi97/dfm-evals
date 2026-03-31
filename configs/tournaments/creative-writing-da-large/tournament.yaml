@@ -6,6 +6,10 @@ contestant_models:
   - vllm/Qwen/Qwen3.5-4B
   - vllm/google-gemma-3-4b-pt-hermes-final
   - vllm/local/hermes-4n-full-20260306-lr3e5-warmup50
+  - vllm/local/hermes-4n-full-20260327-dfm-lr3e5-warmup50-flashattn2
+  - vllm/local/hermes-4n-laerebogen-with-follow-ups-full-20260327-dfm-lr3e5-warmup50-flashattn2
+  - vllm/local/hermes-4n-dolci-alignment-free-wiki-instruct-da-full-20260329-lr3e5-warmup50-flashattn2
+  - vllm/local/hermes-4n-dolci-alignment-free-wiki-instruct-da-repfilter-v5-full-20260330-lr3e5-warmup50-flashattn2
   - vllm/google/gemma-3-12b-it
   - vllm/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4
 
@@ -23,7 +27,6 @@ prompt_source:
 contestant_generate_config:
   temperature: 0.6
   max_tokens: 768
-  reasoning_effort: none
 
 batch_size: 8
 max_total_matches: 120
