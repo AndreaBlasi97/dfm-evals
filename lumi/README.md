@@ -54,7 +54,7 @@ Notes:
 - Use `--extras harbor,sandboxes` when you need `inspect_harbor` and
   `inspect_sandboxes` present in the overlay. That resolves dependencies.
 - Use `--extras ifeval` when you want the `fundamentals` suite or the local
-  `dfm_evals/ifeval-da` task. That installs the optional
+  `ifeval-da` task. That installs the optional
   `instruction_following_eval` dependency.
 - Do not run `<OVERLAY_DIR>/venv/vllm-min/bin/pip` directly from the host. The
   wrapper points at `/overlay/...` and only works from inside the container.

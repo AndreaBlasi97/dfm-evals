@@ -5,6 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 DEFAULT_SUBMIT_SCRIPT="$SCRIPT_DIR/run_euroeval.sbatch"
 ENV_FILE=${ENV_FILE:-$REPO_ROOT/.env}
 
@@ -41,8 +44,8 @@ EUROEVAL_MAX_CONCURRENT_CALLS=${EUROEVAL_MAX_CONCURRENT_CALLS:-1000}
 EUROEVAL_GENERATIVE_TYPE=${EUROEVAL_GENERATIVE_TYPE:-auto}
 EUROEVAL_EXTRA_ARGS=${EUROEVAL_EXTRA_ARGS:-}
 EUROEVAL_CUSTOM_DATASETS_FILE=${EUROEVAL_CUSTOM_DATASETS_FILE:-$REPO_ROOT/lumi/euroeval_custom_datasets.py}
-EUROEVAL_EEE_OUTPUT_DIR=${EUROEVAL_EEE_OUTPUT_DIR:-}
-SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
+EUROEVAL_EEE_OUTPUT_DIR=${EUROEVAL_EEE_OUTPUT_DIR:-$POST_ARTIFACT_ROOT/evals/eee/data}
+SLURM_LOG_DIR=${SLURM_LOG_DIR:-$POST_ARTIFACT_ROOT/evals/slurm}
 TIME_LIMIT=${TIME_LIMIT:-}
 NODES=${NODES:-}
 
@@ -74,10 +77,10 @@ Options:
   --max-concurrent-calls <n> EuroEval max concurrent calls (default: 1000)
   --generative-type <type>   EuroEval generative type: auto|base|instruction_tuned|reasoning (default: auto)
   --extra-args <string>      Extra args appended to EuroEval CLI
-  --eee-output-dir <path>    EEE root data dir override (default: ./logs/every_eval_ever/data)
+  --eee-output-dir <path>    EEE root data dir override (default: $POST_ARTIFACT_ROOT/evals/eee/data)
   --nodes <n>                Slurm node count override (default: from sbatch file)
   --time <HH:MM:SS>          Slurm time limit override (default: from sbatch file)
-  --slurm-log-dir <path>     Slurm stdout/err directory (default: ./logs/slurm)
+  --slurm-log-dir <path>     Slurm stdout/err directory (default: $POST_ARTIFACT_ROOT/evals/slurm)
   --script <path>            sbatch script path override
   --dry-run                  Print sbatch command/env and exit
   --help                     Show help

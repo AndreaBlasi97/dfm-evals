@@ -6,8 +6,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 
-EEE_DATA_ROOT_HOST=${EEE_DATA_ROOT_HOST:-$REPO_ROOT/logs/every_eval_ever/data}
+EEE_DATA_ROOT_HOST=${EEE_DATA_ROOT_HOST:-$POST_ARTIFACT_ROOT/evals/eee/data}
 LATEST_WINDOW_SECONDS=${LATEST_WINDOW_SECONDS:-120}
 RESULTS_TABLE_WIDTH=${RESULTS_TABLE_WIDTH:-160}
 
@@ -29,7 +32,7 @@ Usage:
 Selector options:
   --latest             Use newest EEE export batch under data root (default)
   --all-runs           Use all EEE records under data root
-  --run-label <label>  Use legacy logs/evals-runs/<label>/every_eval_ever if present,
+  --run-label <label>  Use legacy evals/runs/<label>/every_eval_ever if present,
                        otherwise EEE subdir <data_root>/<label> if present
   --log-dir <path>     Use explicit EEE directory path
 
@@ -43,7 +46,7 @@ View options:
   --help               Show help
 
 Environment overrides:
-  EEE_DATA_ROOT_HOST     Host EEE data root (default: ./logs/every_eval_ever/data)
+  EEE_DATA_ROOT_HOST     Host EEE data root (default: $POST_ARTIFACT_ROOT/evals/eee/data)
   LATEST_WINDOW_SECONDS  Window for --latest selection by file mtime (default: 120)
   RESULTS_TABLE_WIDTH    Preferred rich table width for --format table (default: 160)
 
@@ -70,7 +73,7 @@ need_value() {
 
 resolve_run_label_dir() {
   local label="$1"
-  local legacy="$REPO_ROOT/logs/evals-runs/$label/every_eval_ever"
+  local legacy="$POST_ARTIFACT_ROOT/evals/runs/$label/every_eval_ever"
   local rooted="$EEE_DATA_ROOT_HOST/$label"
 
   if [[ -d "$legacy" ]]; then

@@ -20,6 +20,9 @@ set -euo pipefail
 
 REPO_ROOT="${DFM_EVALS_REPO_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
 SCRIPT_DIR="$REPO_ROOT/lumi"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 
 BASE_DIR=/pfs/lustref1/appl/local/laifs
 LAIFS_APPL_DIR=/appl/local/laifs
@@ -47,7 +50,7 @@ DFM_EVALS_MODAL_ENABLE_OUTPUT=${DFM_EVALS_MODAL_ENABLE_OUTPUT:-0}
 DFM_EVALS_TEMPERATURE=${DFM_EVALS_TEMPERATURE:-0}
 DFM_EVALS_EXTRA_ARGS=${DFM_EVALS_EXTRA_ARGS:-}
 DFM_EVALS_EXPORT_EEE=${DFM_EVALS_EXPORT_EEE:-1}
-DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-}
+DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-$POST_ARTIFACT_ROOT/evals/eee/data}
 DFM_EVALS_EEE_SOURCE_ORGANIZATION_NAME=${DFM_EVALS_EEE_SOURCE_ORGANIZATION_NAME:-dfm-evals}
 DFM_EVALS_EEE_EVALUATOR_RELATIONSHIP=${DFM_EVALS_EEE_EVALUATOR_RELATIONSHIP:-third_party}
 
@@ -84,14 +87,14 @@ SERVER_START_STEP=${SERVER_START_STEP:-5}
 
 LORA_MAX_RANK_OVERRIDE=${LORA_MAX_RANK_OVERRIDE:-}
 
-HF_HOME_HOST=${HF_HOME:-/flash/project_465002183/.cache/huggingface/}
+HF_HOME_HOST=${HF_HOME:-/scratch/project_465002183/.cache/huggingface}
 HF_HOME_HOST=${HF_HOME_HOST%/}
 HF_HOME_CONTAINER=/hf-home
 mkdir -p "$HF_HOME_HOST"
 HF_HOME_HOST="$(readlink -f "$HF_HOME_HOST" 2>/dev/null || printf '%s' "$HF_HOME_HOST")"
 SLURM_JOB_ID_SAFE=${SLURM_JOB_ID:-manual}
-DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$REPO_ROOT/logs/evals-runs}
-DFM_EVALS_LOG_ROOT=${DFM_EVALS_LOG_ROOT:-$REPO_ROOT/logs/evals-logs}
+DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$POST_ARTIFACT_ROOT/evals/runs}
+DFM_EVALS_LOG_ROOT=${DFM_EVALS_LOG_ROOT:-$POST_ARTIFACT_ROOT/evals/logs}
 
 TARGET_VLLM_URL=""
 TARGET_SERVER_PID=""
@@ -422,7 +425,7 @@ DFM_EVALS_TORCHINDUCTOR_CACHE_DIR=${DFM_EVALS_TORCHINDUCTOR_CACHE_DIR:-${DFM_EVA
 TARGET_SERVER_CACHE_ROOT=${TARGET_SERVER_CACHE_ROOT:-${DFM_EVALS_CACHE_DIR}/target-server}
 JUDGE_SERVER_CACHE_ROOT=${JUDGE_SERVER_CACHE_ROOT:-${DFM_EVALS_CACHE_DIR}/judge-server}
 if [[ -z "$DFM_EVALS_EEE_OUTPUT_DIR" ]]; then
-  DFM_EVALS_EEE_OUTPUT_DIR="${REPO_ROOT}/logs/every_eval_ever/data"
+  DFM_EVALS_EEE_OUTPUT_DIR="${POST_ARTIFACT_ROOT}/evals/eee/data"
 fi
 
 normalize_tokenizer_dir() {
@@ -556,7 +559,7 @@ build_evals_cli() {
 
   local escaped_args=""
   printf -v escaped_args '%q ' "${evals_args[@]}"
-  out_cmd_ref="evals ${escaped_args}"
+  out_cmd_ref="python -m dfm_evals.cli ${escaped_args}"
   if [[ -n "$DFM_EVALS_EXTRA_ARGS" ]]; then
     out_cmd_ref+="$DFM_EVALS_EXTRA_ARGS"
   fi
@@ -566,8 +569,13 @@ container_env_prefix() {
   cat <<'EOC'
 set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
+BASE_SITE=/opt/venv/lib/python3.12/site-packages
 OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
-export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+DFM_EVALS_REPO_ROOT="__DFM_EVALS_REPO_ROOT__"
+export DFM_EVALS_REPO_ROOT
+# Keep overlay packages ahead of the base container, but still surface shared
+# dependencies that live only in /opt/venv (for example PyYAML).
+export PYTHONPATH=${DFM_EVALS_REPO_ROOT}:/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}:${BASE_SITE}${PYTHONPATH:+:$PYTHONPATH}
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
 if [[ -n "${ROCR_VISIBLE_DEVICES:-}" && -z "${HIP_VISIBLE_DEVICES:-}" ]]; then
   export HIP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES}"
@@ -582,7 +590,8 @@ EOC
 
 render_env() {
   container_env_prefix \
-    | sed "s|__HF_HOME_CONTAINER__|$HF_HOME_CONTAINER|g"
+    | sed "s|__HF_HOME_CONTAINER__|$HF_HOME_CONTAINER|g" \
+    | sed "s|__DFM_EVALS_REPO_ROOT__|$REPO_ROOT|g"
 }
 
 start_vllm_server() {
@@ -645,7 +654,7 @@ if [[ \"\${USE_LORA_ADAPTER:-0}\" == \"1\" ]]; then
     EXTRA_VLLM_FLAGS+=(--tokenizer \"\${LORA_TOKENIZER_PATH}\")
   fi
 fi
-vllm serve \"\${MODEL_TAG}\" \\
+python -m dfm_evals.vllm_serve serve \"\${MODEL_TAG}\" \\
   --served-model-name \"\${SERVED_MODEL_NAME}\" \\
   --host 0.0.0.0 \\
   --port \"\${PORT}\" \\
@@ -748,13 +757,12 @@ SING_BIND_ARGS=(
   -B "$REPO_ROOT:$REPO_ROOT"
   -B "$HF_HOME_HOST:$HF_HOME_CONTAINER"
 )
-if [[ -d /flash ]]; then
-  SING_BIND_ARGS+=(-B /flash:/flash)
-fi
-if [[ -L /flash/project_465002183 ]]; then
-  FLASH_TARGET="$(readlink -f /flash/project_465002183 || true)"
-  if [[ -n "$FLASH_TARGET" && -d "$FLASH_TARGET" ]]; then
-    SING_BIND_ARGS+=(-B "$FLASH_TARGET:$FLASH_TARGET")
+if [[ -e "$POST_ARTIFACT_ROOT" ]]; then
+  ARTIFACT_ROOT_TARGET="$(readlink -f "$POST_ARTIFACT_ROOT" || true)"
+  if [[ -n "$ARTIFACT_ROOT_TARGET" && -d "$ARTIFACT_ROOT_TARGET" ]]; then
+    SING_BIND_ARGS+=(-B "$ARTIFACT_ROOT_TARGET:$ARTIFACT_ROOT_TARGET")
+  elif [[ -d "$POST_ARTIFACT_ROOT" ]]; then
+    SING_BIND_ARGS+=(-B "$POST_ARTIFACT_ROOT:$POST_ARTIFACT_ROOT")
   fi
 fi
 if [[ "$USE_LORA_ADAPTER" == "1" && -d "$LORA_ADAPTER_PATH" ]]; then
@@ -896,7 +904,19 @@ if [[ -n ${OPENAI_BASE_URL_Q} ]]; then
 fi
 ${MODEL_INFO_EXPORT_CMD}
 cd ${DFM_EVALS_RUN_DIR_Q}
-command -v evals >/dev/null 2>&1 || { echo 'FATAL: evals not installed in overlay venv'; exit 1; }
+python - <<'PY'
+import inspect_ai
+import sys
+import yaml
+
+import dfm_evals.cli
+
+print('dfm_evals_python\t' + sys.executable)
+print('dfm_evals_prefix\t' + sys.prefix)
+print('dfm_evals_yaml\t' + yaml.__file__)
+print('dfm_evals_inspect_ai\t' + inspect_ai.__file__)
+print('dfm_evals_cli\t' + dfm_evals.cli.__file__)
+PY
 ${EVALS_CMD}"
 
 echo "SIF: $SIF"
@@ -1003,8 +1023,20 @@ mkdir -p ${DFM_EVALS_XDG_DATA_HOME_Q}
 mkdir -p ${DFM_EVALS_TRITON_CACHE_DIR_Q}
 mkdir -p ${DFM_EVALS_TORCHINDUCTOR_CACHE_DIR_Q}
 mkdir -p ${DFM_EVALS_EEE_OUTPUT_DIR_Q}
-command -v evals >/dev/null 2>&1 || { echo 'FATAL: evals not installed in overlay venv'; exit 1; }
-evals eee inspect \
+python - <<'PY'
+import inspect_ai
+import sys
+import yaml
+
+import dfm_evals.cli
+
+print('dfm_evals_python\t' + sys.executable)
+print('dfm_evals_prefix\t' + sys.prefix)
+print('dfm_evals_yaml\t' + yaml.__file__)
+print('dfm_evals_inspect_ai\t' + inspect_ai.__file__)
+print('dfm_evals_cli\t' + dfm_evals.cli.__file__)
+PY
+python -m dfm_evals.cli eee inspect \
   --log-path ${DFM_EVALS_LOG_DIR_Q} \
   --output-dir ${DFM_EVALS_EEE_OUTPUT_DIR_Q} \
   --source-organization-name ${DFM_EVALS_EEE_SOURCE_ORGANIZATION_NAME_Q} \

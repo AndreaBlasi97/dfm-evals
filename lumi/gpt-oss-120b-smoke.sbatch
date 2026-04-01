@@ -10,37 +10,43 @@
 #SBATCH --gpus-per-node=8
 #SBATCH --mem=480G
 #SBATCH --time=00:45:00
-#SBATCH --output=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals/logs/slurm/gpt-oss-120b-smoke-%j.out
-#SBATCH --error=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals/logs/slurm/gpt-oss-120b-smoke-%j.err
+#SBATCH --output=/pfs/lustrep4/scratch/project_465002183/rasmus/artifacts/evals/slurm/gpt-oss-120b-smoke-%j.out
+#SBATCH --error=/pfs/lustrep4/scratch/project_465002183/rasmus/artifacts/evals/slurm/gpt-oss-120b-smoke-%j.err
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 
 BASE_DIR=/pfs/lustref1/appl/local/laifs
 LAIFS_APPL_DIR=/appl/local/laifs
 SIF=$BASE_DIR/containers/lumi-multitorch-u24r64f21m43t29-20260216_093549/lumi-multitorch-full-u24r64f21m43t29-20260216_093549.sif
-REPO_ROOT=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals
-OVERLAY_DIR=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/overlay_vllm_minimal
-HF_HOME=/flash/project_465002183/.cache/huggingface/
-LOG_DIR=$REPO_ROOT/logs/tmp-logs
+OVERLAY_DIR=${OVERLAY_DIR:-$REPO_ROOT/overlay_vllm_minimal}
+HF_HOME=${HF_HOME:-/scratch/project_465002183/.cache/huggingface}
+HF_HOME=${HF_HOME%/}
+LOG_DIR=${LOG_DIR:-$POST_ARTIFACT_ROOT/evals/tmp-logs}
 MODEL_PATH=${MODEL_PATH:-openai/gpt-oss-120b}
 export MODEL_PATH
+export REPO_ROOT
+export OVERLAY_DIR
+export HF_HOME
+export LOG_DIR
 
 mkdir -p "$LOG_DIR"
+mkdir -p "$POST_ARTIFACT_ROOT/evals/slurm"
 
 declare -a SING_BIND_ARGS=(
   -B "$BASE_DIR:$LAIFS_APPL_DIR"
   -B "$OVERLAY_DIR:/overlay"
   -B "$REPO_ROOT:$REPO_ROOT"
+  -B "$HF_HOME:$HF_HOME"
 )
 
-if [[ -d /flash ]]; then
-  SING_BIND_ARGS+=(-B /flash:/flash)
-fi
-if [[ -L /flash/project_465002183 ]]; then
-  FLASH_TARGET="$(readlink -f /flash/project_465002183 || true)"
-  if [[ -n "$FLASH_TARGET" && -d "$FLASH_TARGET" ]]; then
-    SING_BIND_ARGS+=(-B "$FLASH_TARGET:$FLASH_TARGET")
-  fi
+if [[ -d "$POST_ARTIFACT_ROOT" ]]; then
+  SING_BIND_ARGS+=(-B "$POST_ARTIFACT_ROOT:$POST_ARTIFACT_ROOT")
 fi
 
 read -r -d '' INNER_SCRIPT <<'EOS' || true
@@ -54,15 +60,12 @@ if [[ -n "${ROCR_VISIBLE_DEVICES:-}" && -z "${HIP_VISIBLE_DEVICES:-}" ]]; then
   export HIP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES}"
 fi
 unset ROCR_VISIBLE_DEVICES
-export HF_HOME="/flash/project_465002183/.cache/huggingface/"
+export HF_HOME="${HF_HOME%/}"
 export HF_HUB_CACHE="${HF_HOME%/}/hub"
 export TRANSFORMERS_CACHE="${HF_HOME%/}/transformers"
 export HF_DATASETS_CACHE="${HF_HOME%/}/datasets"
 mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TRANSFORMERS_CACHE" "$HF_DATASETS_CACHE"
 export MODEL_PATH="${MODEL_PATH}"
-
-REPO_ROOT=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals
-LOG_DIR="$REPO_ROOT/logs/tmp-logs"
 JOB_ID="${SLURM_JOB_ID:-manual}"
 SERVER_HOST=127.0.0.1
 SERVER_PORT=8021
@@ -131,7 +134,7 @@ from pathlib import Path
 job_id = os.environ.get("SLURM_JOB_ID", "manual")
 model_path = os.environ["MODEL_PATH"]
 reasoning_effort = os.environ.get("REASONING_EFFORT", "")
-req_path = Path("/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals/logs/tmp-logs") / f"gpt-oss-120b-chat-req-{job_id}.json"
+req_path = Path(os.environ["LOG_DIR"]) / f"gpt-oss-120b-chat-req-{job_id}.json"
 payload = {
     "model": model_path,
     "messages": [
@@ -162,7 +165,7 @@ import os
 from pathlib import Path
 
 job_id = os.environ.get("SLURM_JOB_ID", "manual")
-log_root = Path("/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/dfm-evals/logs/tmp-logs")
+log_root = Path(os.environ["LOG_DIR"])
 models_path = log_root / f"gpt-oss-120b-models-{job_id}.json"
 chat_path = log_root / f"gpt-oss-120b-chat-{job_id}.json"
 

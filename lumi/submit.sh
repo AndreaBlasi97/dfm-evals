@@ -5,6 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 DEFAULT_SUBMIT_SCRIPT="$SCRIPT_DIR/run_suite.sbatch"
 ENV_FILE=${ENV_FILE:-$REPO_ROOT/.env}
 
@@ -20,8 +23,8 @@ OVERLAY_DIR=${OVERLAY_DIR:-$REPO_ROOT/overlay_vllm_minimal}
 if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
   OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
 fi
-DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$REPO_ROOT/logs/evals-runs}
-DFM_EVALS_LOG_ROOT=${DFM_EVALS_LOG_ROOT:-$REPO_ROOT/logs/evals-logs}
+DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$POST_ARTIFACT_ROOT/evals/runs}
+DFM_EVALS_LOG_ROOT=${DFM_EVALS_LOG_ROOT:-$POST_ARTIFACT_ROOT/evals/logs}
 
 MODEL=${MODEL:-google/gemma-3-4b-it}
 EVAL_MODEL=${EVAL_MODEL:-}
@@ -61,8 +64,8 @@ JUDGE_CTX_SET=0
 DFM_EVALS_MODAL_ENABLE_OUTPUT=${DFM_EVALS_MODAL_ENABLE_OUTPUT:-0}
 RUN_LABEL=${RUN_LABEL:-}
 EXTRA_ARGS=${EXTRA_ARGS:-}
-DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-}
-SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
+DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-$POST_ARTIFACT_ROOT/evals/eee/data}
+SLURM_LOG_DIR=${SLURM_LOG_DIR:-$POST_ARTIFACT_ROOT/evals/slurm}
 DRY_RUN=0
 
 usage() {
@@ -113,8 +116,8 @@ Options:
   --modal-disable-output     Disable Modal SDK output (default)
   --run-label <label>        Optional DFM_EVALS_RUN_LABEL override (default: <suite>__<model-slug>__job-<jobid>)
   --extra-args <string>      Extra args appended to evals CLI
-  --eee-output-dir <path>    EEE root data dir override (default: ./logs/every_eval_ever/data)
-  --slurm-log-dir <path>     Slurm stdout/err directory (default: ./logs/slurm)
+  --eee-output-dir <path>    EEE root data dir override (default: $POST_ARTIFACT_ROOT/evals/eee/data)
+  --slurm-log-dir <path>     Slurm stdout/err directory (default: $POST_ARTIFACT_ROOT/evals/slurm)
   --script <path>            sbatch script to submit
   --dry-run                  Print sbatch command/env and exit
   --help                     Show help

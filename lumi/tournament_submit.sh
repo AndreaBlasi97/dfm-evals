@@ -5,6 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 DEFAULT_SUBMIT_SCRIPT="$SCRIPT_DIR/run_tournament.sbatch"
 ENV_FILE=${ENV_FILE:-$REPO_ROOT/.env}
 
@@ -21,8 +24,8 @@ if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
   OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
 fi
 
-DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$REPO_ROOT/logs/evals-logs}
-SLURM_LOG_DIR=${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}
+DFM_EVALS_RUN_ROOT=${DFM_EVALS_RUN_ROOT:-$POST_ARTIFACT_ROOT/evals/runs}
+SLURM_LOG_DIR=${SLURM_LOG_DIR:-$POST_ARTIFACT_ROOT/evals/slurm}
 TOURNAMENT_DEFINITIONS_DIR=${TOURNAMENT_DEFINITIONS_DIR:-$REPO_ROOT/configs/tournaments}
 
 PHASE=${PHASE:-all}
@@ -36,7 +39,7 @@ MAX_TOTAL_MATCHES_OVERRIDE=${MAX_TOTAL_MATCHES_OVERRIDE:-}
 CONTESTANT_PORT=${CONTESTANT_PORT:-8000}
 JUDGE_PORT=${JUDGE_PORT:-8001}
 DFM_TOURNAMENT_EXPORT_EEE=${DFM_TOURNAMENT_EXPORT_EEE:-1}
-DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-}
+DFM_EVALS_EEE_OUTPUT_DIR=${DFM_EVALS_EEE_OUTPUT_DIR:-$POST_ARTIFACT_ROOT/evals/eee/data}
 DFM_EVALS_EEE_SOURCE_ORGANIZATION_NAME=${DFM_EVALS_EEE_SOURCE_ORGANIZATION_NAME:-dfm-evals}
 DFM_EVALS_EEE_EVALUATOR_RELATIONSHIP=${DFM_EVALS_EEE_EVALUATOR_RELATIONSHIP:-third_party}
 NODES_OVERRIDE=${NODES_OVERRIDE:-}
@@ -70,10 +73,10 @@ Options:
   --nodes <n>               Slurm node count override (default: auto from launch-map for non-export phases)
   --run-label <label>       Override run label for new all/generate runs
   --openai-base-url <url>   Export DFM_EVALS_OPENAI_BASE_URL into the job env
-  --eee-output-dir <path>   EEE root data dir override (default: ./logs/every_eval_ever/data)
+  --eee-output-dir <path>   EEE root data dir override (default: $POST_ARTIFACT_ROOT/evals/eee/data)
   --export-eee             Export tournament EEE in export/all phase (default)
   --no-export-eee          Skip tournament EEE export
-  --slurm-log-dir <path>    Slurm stdout/err directory (default: ./logs/slurm)
+  --slurm-log-dir <path>    Slurm stdout/err directory (default: $POST_ARTIFACT_ROOT/evals/slurm)
   --list-definitions        List committed tournament definitions and exit
   --script <path>           sbatch script to submit
   --dry-run                 Print sbatch command/env and exit
@@ -82,9 +85,9 @@ Options:
 Examples:
   ./lumi/tournament_submit.sh --phase all --definition creative-writing-da-smoke
   ./lumi/tournament_submit.sh --phase all --definition creative-writing-da-smoke --contestant-model vllm/google/gemma-3-4b-it --contestant-model vllm/google-gemma-3-4b-pt-hermes-final --judge-model openai/qwen-235b
-  ./lumi/tournament_submit.sh --phase run --target ./logs/evals-logs/tournament__demo__job-123 --launch-map ./configs/tournaments/creative-writing-da-smoke
-  ./lumi/tournament_submit.sh --phase add-model --target ./logs/evals-logs/tournament__demo__job-123 --launch-map ./configs/tournaments/creative-writing-da-smoke --model vllm/google/gemma-3-12b-it
-  ./lumi/tournament_submit.sh --phase export --target ./logs/evals-logs/tournament__demo__job-123
+  ./lumi/tournament_submit.sh --phase run --target "$POST_ARTIFACT_ROOT/evals/runs/tournament__demo__job-123" --launch-map ./configs/tournaments/creative-writing-da-smoke
+  ./lumi/tournament_submit.sh --phase add-model --target "$POST_ARTIFACT_ROOT/evals/runs/tournament__demo__job-123" --launch-map ./configs/tournaments/creative-writing-da-smoke --model vllm/google/gemma-3-12b-it
+  ./lumi/tournament_submit.sh --phase export --target "$POST_ARTIFACT_ROOT/evals/runs/tournament__demo__job-123"
 EOF
 }
 

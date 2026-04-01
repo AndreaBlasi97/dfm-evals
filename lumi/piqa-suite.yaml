@@ -2,4 +2,4 @@ sets:
   piqa:
     description: Danish PIQA only
     tasks:
-      - dfm_evals/piqa
+      - piqa

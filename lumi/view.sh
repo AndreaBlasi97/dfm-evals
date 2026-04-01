@@ -5,6 +5,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/artifact_root.sh"
+POST_ARTIFACT_ROOT="$(resolve_post_artifact_root "$REPO_ROOT")"
+export POST_ARTIFACT_ROOT
 
 BASE_DIR=/pfs/lustref1/appl/local/laifs
 LAIFS_APPL_DIR=/appl/local/laifs
@@ -14,9 +17,9 @@ if [[ ! -d "$OVERLAY_DIR" && -d "$REPO_ROOT/../overlay_vllm_minimal" ]]; then
   OVERLAY_DIR="$REPO_ROOT/../overlay_vllm_minimal"
 fi
 
-EVAL_LOG_ROOT_HOST=${EVAL_LOG_ROOT_HOST:-${OVERLAY_LOG_ROOT_HOST:-$REPO_ROOT/logs/evals-logs}}
+EVAL_LOG_ROOT_HOST=${EVAL_LOG_ROOT_HOST:-${OVERLAY_LOG_ROOT_HOST:-$POST_ARTIFACT_ROOT/evals/logs}}
 EVAL_LOG_ROOT_CONTAINER=${EVAL_LOG_ROOT_CONTAINER:-${OVERLAY_LOG_ROOT_CONTAINER:-$EVAL_LOG_ROOT_HOST}}
-SLURM_LOG_DIR_HOST=${SLURM_LOG_DIR_HOST:-${SLURM_LOG_DIR:-$REPO_ROOT/logs/slurm}}
+SLURM_LOG_DIR_HOST=${SLURM_LOG_DIR_HOST:-${SLURM_LOG_DIR:-$POST_ARTIFACT_ROOT/evals/slurm}}
 
 VIEW_MODE=start
 if [[ $# -gt 0 ]]; then
@@ -39,7 +42,7 @@ VIEW_OVERWRITE=${VIEW_OVERWRITE:-1}
 VIEW_RUN_LABEL=${VIEW_RUN_LABEL:-}
 VIEW_XDG_CACHE_HOME=${VIEW_XDG_CACHE_HOME:-}
 VIEW_XDG_DATA_HOME=${VIEW_XDG_DATA_HOME:-}
-HF_HOME=${HF_HOME:-/flash/project_465002183/.cache/huggingface/}
+HF_HOME=${HF_HOME:-/scratch/project_465002183/.cache/huggingface}
 PASSTHROUGH_ARGS=()
 
 usage() {
@@ -50,7 +53,7 @@ Usage:
   ./lumi/view.sh list
 
 Selector options:
-  --all                Use all runs (default, logs/evals-logs)
+  --all                Use all runs (default, $POST_ARTIFACT_ROOT/evals/logs)
   --latest             Use latest run dir under eval logs
   --job-id <id>        Use run dir matching *__job-<id>, <id>, or
                        slurm label file *-<id>.out/.err
@@ -416,13 +419,12 @@ SING_BIND_ARGS=(
   -B "$REPO_ROOT:$REPO_ROOT"
 )
 EXTRA_BINDS=()
-if [[ -d /flash ]]; then
-  SING_BIND_ARGS+=(-B /flash:/flash)
-fi
-if [[ -L /flash/project_465002183 ]]; then
-  FLASH_TARGET="$(readlink -f /flash/project_465002183 || true)"
-  if [[ -n "$FLASH_TARGET" && -d "$FLASH_TARGET" ]]; then
-    SING_BIND_ARGS+=(-B "$FLASH_TARGET:$FLASH_TARGET")
+if [[ -e "$POST_ARTIFACT_ROOT" ]]; then
+  ARTIFACT_ROOT_TARGET="$(readlink -f "$POST_ARTIFACT_ROOT" || true)"
+  if [[ -n "$ARTIFACT_ROOT_TARGET" && -d "$ARTIFACT_ROOT_TARGET" ]]; then
+    SING_BIND_ARGS+=(-B "$ARTIFACT_ROOT_TARGET:$ARTIFACT_ROOT_TARGET")
+  elif [[ -d "$POST_ARTIFACT_ROOT" ]]; then
+    SING_BIND_ARGS+=(-B "$POST_ARTIFACT_ROOT:$POST_ARTIFACT_ROOT")
   fi
 fi
 
