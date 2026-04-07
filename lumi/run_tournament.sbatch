@@ -256,8 +256,13 @@ container_env_prefix() {
   cat <<'EOC'
 set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
-OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
-export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+if [[ -f /overlay/overlay-runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /overlay/overlay-runtime.env
+else
+  OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
+  export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+fi
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
 export TORCHDYNAMO_DISABLE=1
 if [[ -n "${ROCR_VISIBLE_DEVICES:-}" && -z "${HIP_VISIBLE_DEVICES:-}" ]]; then
@@ -330,6 +335,12 @@ init_singularity_binds() {
     -B "$OVERLAY_DIR:/overlay"
     -B "$REPO_ROOT:$REPO_ROOT"
   )
+  if [[ -f "$OVERLAY_DIR/overlay-runtime.binds" ]]; then
+    while IFS= read -r bind_spec; do
+      [[ -n "$bind_spec" ]] || continue
+      SING_BIND_ARGS+=(-B "$bind_spec")
+    done < "$OVERLAY_DIR/overlay-runtime.binds"
+  fi
   BOUND_PATHS=(
     "$BASE_DIR"
     "$OVERLAY_DIR"

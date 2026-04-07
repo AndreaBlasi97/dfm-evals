@@ -7,6 +7,7 @@ instead of relying on Inspect self-spawn.
 ## Files
 
 - `lumi/build_overlay_minimal.sh`: build/update overlay venv with vLLM + dependencies.
+- `lumi/build_overlay_rocm72_main.sh`: experimental isolated overlay builder for upstream `vllm` main on ROCm 7.2 + PyTorch 2.11.
 - `lumi/submit.sh`: submit suite runs via `sbatch`.
 - `lumi/run_suite.sbatch`: batch job entrypoint used by `submit.sh`.
 - `lumi/tournament_submit.sh`: submit phase-based tournament runs via `sbatch`.
@@ -37,6 +38,22 @@ EOF
 # 4) Submit fundamentals suite (default: gemma target + judge)
 ./lumi/submit.sh --limit 100
 ```
+
+Experimental upstream-main overlay with newer ROCm/PyTorch user space:
+
+```bash
+OVERLAY_DIR=/pfs/lustrep4/scratch/project_465002183/rasmus/vllm-lumi/overlay_vllm_rocm72_main \
+./lumi/build_overlay_rocm72_main.sh
+```
+
+Notes:
+
+- `build_overlay_minimal.sh` remains the stable ROCm 6.4 / `vllm 0.16.0` path.
+- `build_overlay_rocm72_main.sh` is the experimental isolated stack used for the ROCm 7.2 / upstream-main generation test.
+- the ROCm 7.2 builder writes `overlay-runtime.env`, `overlay-runtime.binds`, `overlay-sidecar-manifest.json`, and `overlay-runtime-check.json`.
+- the ROCm 7.2 overlay is intentionally a two-part runtime: the overlay itself plus an explicit external ROCm 7.2 user-space sidecar tree bound at runtime.
+- the main LUMI launchers consume `overlay-runtime.env` and `overlay-runtime.binds` automatically when `OVERLAY_DIR` points at that overlay.
+- the ROCm 7.2 runtime injects an overlay-local `sitecustomize.py` so `/opt/venv` is stripped from `sys.path`; if `overlay-runtime-check.json` shows paths under `/opt/venv`, treat that overlay build as invalid.
 
 ## Update `dfm-evals` In The Overlay
 

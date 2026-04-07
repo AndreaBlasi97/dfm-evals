@@ -358,11 +358,16 @@ container_env_prefix() {
   cat <<'EOC'
 set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
-OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
-if [[ -d /overlay/src/transformers/src ]]; then
-  export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+if [[ -f /overlay/overlay-runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /overlay/overlay-runtime.env
 else
-  export PYTHONPATH=/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+  OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
+  if [[ -d /overlay/src/transformers/src ]]; then
+    export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+  else
+    export PYTHONPATH=/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+  fi
 fi
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
 if [[ -n "${ROCR_VISIBLE_DEVICES:-}" && -z "${HIP_VISIBLE_DEVICES:-}" ]]; then
@@ -491,6 +496,12 @@ SING_BIND_ARGS=(
   -B "$OVERLAY_DIR:/overlay"
   -B "$REPO_ROOT:$REPO_ROOT"
 )
+if [[ -f "$OVERLAY_DIR/overlay-runtime.binds" ]]; then
+  while IFS= read -r bind_spec; do
+    [[ -n "$bind_spec" ]] || continue
+    SING_BIND_ARGS+=(-B "$bind_spec")
+  done < "$OVERLAY_DIR/overlay-runtime.binds"
+fi
 if [[ -e "$POST_ARTIFACT_ROOT" ]]; then
   ARTIFACT_ROOT_TARGET="$(readlink -f "$POST_ARTIFACT_ROOT" || true)"
   if [[ -n "$ARTIFACT_ROOT_TARGET" && -d "$ARTIFACT_ROOT_TARGET" ]]; then

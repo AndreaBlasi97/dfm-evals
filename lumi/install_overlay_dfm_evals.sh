@@ -80,16 +80,81 @@ if [[ -n "$EXTRAS" ]]; then
   INSTALL_TARGET=".[${EXTRAS}]"
 fi
 
-NO_DEPS_FLAG=""
-if [[ "$NO_DEPS_SET" == "1" ]]; then
-  NO_DEPS_FLAG="--no-deps"
+REQ_EXPORT_FILE_HOST="$OVERLAY_DIR/runtime/dfm-evals-install.requirements.txt"
+REQ_EXPORT_FILE_CONTAINER="/overlay/runtime/dfm-evals-install.requirements.txt"
+rm -f "$REQ_EXPORT_FILE_HOST"
+
+if [[ "$NO_DEPS_SET" != "1" ]]; then
+  command -v uv >/dev/null 2>&1 || die "uv is required for locked dependency export"
+  export UV_CACHE_DIR="${UV_CACHE_DIR:-/scratch/project_465002183/.cache/uv}"
+  mkdir -p "$UV_CACHE_DIR" "$(dirname "$REQ_EXPORT_FILE_HOST")"
+
+  UV_EXPORT_ARGS=(
+    export
+    --locked
+    --no-dev
+    --no-hashes
+    --no-header
+    --no-emit-project
+    --format requirements-txt
+    --output-file "$REQ_EXPORT_FILE_HOST"
+  )
+
+  if [[ -n "$EXTRAS" ]]; then
+    IFS=',' read -r -a extras_list <<<"$EXTRAS"
+    for extra in "${extras_list[@]}"; do
+      [[ -n "$extra" ]] || continue
+      UV_EXPORT_ARGS+=(--extra "$extra")
+    done
+  fi
+
+  (
+    cd "$REPO_ROOT"
+    uv "${UV_EXPORT_ARGS[@]}"
+  )
+
+  python - "$REQ_EXPORT_FILE_HOST" <<'PY'
+from pathlib import Path
+import sys
+
+req_path = Path(sys.argv[1])
+preserve = {
+    "hf-xet",
+    "huggingface-hub",
+    "tokenizers",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "transformers",
+    "triton",
+    "triton-rocm",
+    "vllm",
+}
+
+lines = []
+for raw in req_path.read_text(encoding="utf-8").splitlines():
+    stripped = raw.strip()
+    if not stripped or stripped.startswith("#"):
+        continue
+    name = stripped.split(";", 1)[0].split("@", 1)[0].split("==", 1)[0].strip().lower()
+    if name in preserve:
+        continue
+    lines.append(raw)
+
+req_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
 fi
 
 printf -v INSTALL_TARGET_Q '%q' "$INSTALL_TARGET"
 printf -v REPO_ROOT_Q '%q' "$REPO_ROOT"
+printf -v REQ_EXPORT_FILE_Q '%q' "$REQ_EXPORT_FILE_CONTAINER"
 
 INSTALL_CMD="set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
+if [[ -f /overlay/overlay-runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /overlay/overlay-runtime.env
+fi
 export PIP_USER=0
 unset PYTHONUSERBASE
 export XDG_CACHE_HOME=/overlay/cache
@@ -109,26 +174,40 @@ for dist_name in (\"transformers\", \"huggingface-hub\", \"tokenizers\"):
         pass
 PY
 cd ${REPO_ROOT_Q}
-python -m pip install --no-user -U -c \"\$CONSTRAINTS_FILE\" -e ${INSTALL_TARGET_Q}"
+"
 
-if [[ -n "$NO_DEPS_FLAG" ]]; then
-  INSTALL_CMD+=" ${NO_DEPS_FLAG}"
+if [[ "$NO_DEPS_SET" == "1" ]]; then
+  INSTALL_CMD+="python -m pip install --no-user -U -c \"\$CONSTRAINTS_FILE\" -e ${INSTALL_TARGET_Q} --no-deps"
+else
+  INSTALL_CMD+="python -m pip install --no-user -U -c \"\$CONSTRAINTS_FILE\" -r ${REQ_EXPORT_FILE_Q}
+python -m pip install --no-user -U -c \"\$CONSTRAINTS_FILE\" -e ${INSTALL_TARGET_Q} --no-deps"
 fi
 
 echo "+ SIF: $SIF"
 echo "+ Overlay: $OVERLAY_DIR"
 echo "+ Repo: $REPO_ROOT"
 echo "+ Install target: $INSTALL_TARGET"
-if [[ -n "$NO_DEPS_FLAG" ]]; then
+if [[ "$NO_DEPS_SET" == "1" ]]; then
   echo "+ Dependency mode: no-deps"
 else
-  echo "+ Dependency mode: resolve deps"
+  echo "+ Dependency mode: locked deps via uv export"
+  echo "+ Exported requirements: $REQ_EXPORT_FILE_HOST"
+fi
+
+SING_BIND_ARGS=(
+  -B "$BASE_DIR:$LAIFS_APPL_DIR"
+  -B "$OVERLAY_DIR:/overlay"
+  -B "$REPO_ROOT:$REPO_ROOT"
+)
+if [[ -f "$OVERLAY_DIR/overlay-runtime.binds" ]]; then
+  while IFS= read -r bind_spec; do
+    [[ -n "$bind_spec" ]] || continue
+    SING_BIND_ARGS+=(-B "$bind_spec")
+  done < "$OVERLAY_DIR/overlay-runtime.binds"
 fi
 
 singularity exec --rocm \
-  -B "$BASE_DIR:$LAIFS_APPL_DIR" \
-  -B "$OVERLAY_DIR:/overlay" \
-  -B "$REPO_ROOT:$REPO_ROOT" \
+  "${SING_BIND_ARGS[@]}" \
   "$SIF" bash -lc "$INSTALL_CMD"
 
 echo "+ Overlay install complete."

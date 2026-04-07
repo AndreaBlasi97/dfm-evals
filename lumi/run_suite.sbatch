@@ -580,13 +580,23 @@ container_env_prefix() {
   cat <<'EOC'
 set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
-BASE_SITE=/opt/venv/lib/python3.12/site-packages
-OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
 DFM_EVALS_REPO_ROOT="__DFM_EVALS_REPO_ROOT__"
 export DFM_EVALS_REPO_ROOT
-# Keep overlay packages ahead of the base container, but still surface shared
-# dependencies that live only in /opt/venv (for example PyYAML).
-export PYTHONPATH=${DFM_EVALS_REPO_ROOT}:/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}:${BASE_SITE}${PYTHONPATH:+:$PYTHONPATH}
+if [[ -f /overlay/overlay-runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /overlay/overlay-runtime.env
+  if [[ -n "${PYTHONPATH:-}" ]]; then
+    export PYTHONPATH="${DFM_EVALS_REPO_ROOT}:${PYTHONPATH}"
+  else
+    export PYTHONPATH="${DFM_EVALS_REPO_ROOT}"
+  fi
+else
+  BASE_SITE=/opt/venv/lib/python3.12/site-packages
+  OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
+  # Keep overlay packages ahead of the base container, but still surface shared
+  # dependencies that live only in /opt/venv (for example PyYAML).
+  export PYTHONPATH=${DFM_EVALS_REPO_ROOT}:/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}:${BASE_SITE}${PYTHONPATH:+:$PYTHONPATH}
+fi
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
 if [[ -n "${ROCR_VISIBLE_DEVICES:-}" && -z "${HIP_VISIBLE_DEVICES:-}" ]]; then
   export HIP_VISIBLE_DEVICES="${ROCR_VISIBLE_DEVICES}"
@@ -770,6 +780,12 @@ SING_BIND_ARGS=(
   -B "$REPO_ROOT:$REPO_ROOT"
   -B "$HF_HOME_HOST:$HF_HOME_CONTAINER"
 )
+if [[ -f "$OVERLAY_DIR/overlay-runtime.binds" ]]; then
+  while IFS= read -r bind_spec; do
+    [[ -n "$bind_spec" ]] || continue
+    SING_BIND_ARGS+=(-B "$bind_spec")
+  done < "$OVERLAY_DIR/overlay-runtime.binds"
+fi
 if [[ -e "$POST_ARTIFACT_ROOT" ]]; then
   ARTIFACT_ROOT_TARGET="$(readlink -f "$POST_ARTIFACT_ROOT" || true)"
   if [[ -n "$ARTIFACT_ROOT_TARGET" && -d "$ARTIFACT_ROOT_TARGET" ]]; then

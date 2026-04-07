@@ -427,13 +427,24 @@ if [[ -e "$POST_ARTIFACT_ROOT" ]]; then
     SING_BIND_ARGS+=(-B "$POST_ARTIFACT_ROOT:$POST_ARTIFACT_ROOT")
   fi
 fi
+if [[ -f "$OVERLAY_DIR/overlay-runtime.binds" ]]; then
+  while IFS= read -r bind_spec; do
+    [[ -n "$bind_spec" ]] || continue
+    SING_BIND_ARGS+=(-B "$bind_spec")
+  done < "$OVERLAY_DIR/overlay-runtime.binds"
+fi
 
 container_env_prefix() {
   cat <<'EOC'
 set -euo pipefail
 source /overlay/venv/vllm-min/bin/activate
-OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
-export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+if [[ -f /overlay/overlay-runtime.env ]]; then
+  # shellcheck disable=SC1091
+  source /overlay/overlay-runtime.env
+else
+  OVERLAY_SITE=/overlay/venv/vllm-min/lib/python3.12/site-packages
+  export PYTHONPATH=/overlay/src/transformers/src:/overlay/src/vllm:${OVERLAY_SITE}${PYTHONPATH:+:$PYTHONPATH}
+fi
 unset SSL_CERT_FILE REQUESTS_CA_BUNDLE CURL_CA_BUNDLE
 export HF_HOME="__HF_HOME__"
 export HF_HUB_CACHE="${HF_HOME%/}/hub"
