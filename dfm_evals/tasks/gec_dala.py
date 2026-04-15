@@ -4,12 +4,10 @@ from typing import Any, Literal
 
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample, hf_dataset
-from inspect_ai.scorer import exact
-from inspect_ai.solver import generate
+from inspect_ai.scorer import Score, Scorer, Target, mean, scorer, stderr
+from inspect_ai.solver import TaskState, generate
 
-from ..scorers import gleu
-
-DEFAULT_HUGGING_FACE_ID = "giannor/dala_gen_v2"
+DEFAULT_HUGGING_FACE_ID = "giannor/dala_gen_v3"
 DEFAULT_DATASET_NAME = "gec_dala"
 DEFAULT_PROMPT_TEMPLATE = """Givet følgende sætning på dansk, afgør om den er grammatisk korrekt eller ukorrekt.
 - Hvis den er ukorrekt, skal du outputte den rettede version.
@@ -89,8 +87,28 @@ def gec_dala(
     return Task(
         dataset=_load_hf_dataset(dataset_kwargs),
         solver=[generate(max_tokens=max_gen_toks, temperature=temperature)],
-        scorer=[gleu(ignore_case=False), exact()],
+        scorer=[gec_dala_scorer()],
     )
+
+
+@scorer(metrics={"exact_match": [mean(), stderr()]})
+def gec_dala_scorer() -> Scorer:
+    async def score(state: TaskState, target: Target) -> Score:
+        prediction = state.output.completion.strip()
+        references = [item.strip() for item in target if item.strip()]
+        exact_match = float(prediction in references) if references else 0.0
+
+        return Score(
+            value={"exact_match": exact_match},
+            answer=prediction,
+            explanation=f"exact_match={exact_match}",
+            metadata={
+                "prediction": prediction,
+                "targets": references,
+            },
+        )
+
+    return score
 
 
 def _load_hf_dataset(dataset_kwargs: dict[str, Any]) -> Any:

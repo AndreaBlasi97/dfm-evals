@@ -4,6 +4,7 @@ import dfm_evals.tasks.gec_dala as gec_dala_module
 from dfm_evals.tasks.gec_dala import (
     _load_hf_dataset,
     _normalize_split_name,
+    gec_dala_scorer,
     record_to_sample,
 )
 
@@ -77,3 +78,11 @@ def test_load_hf_dataset_retries_without_name_on_missing_builder_config(
             "split": "test",
         },
     ]
+
+
+def test_gec_dala_scorer_registers_exact_match_metric() -> None:
+    registry_info = gec_dala_scorer().__registry_info__
+    metrics = registry_info.metadata["metrics"]
+
+    assert isinstance(metrics, dict)
+    assert "exact_match" in metrics
