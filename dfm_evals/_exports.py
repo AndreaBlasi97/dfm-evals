@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
+from pathlib import Path
 
 REGISTRY_EXPORTS = {
     "danish_citizen_tests": "dfm_evals.tasks.danish_citizen_tests:danish_citizen_tests",
@@ -49,9 +50,59 @@ REGISTRY_ONLY_MODULES = (
     "dfm_evals.sandboxes.prime",
     "dfm_evals.tournament.scorer",
 )
+
+
+def discover_task_modules(
+    *,
+    root_package: str = "dfm_evals.tasks",
+    tasks_dir: Path | None = None,
+) -> tuple[str, ...]:
+    """Discover importable task entry modules by filesystem convention."""
+
+    if tasks_dir is None:
+        tasks_dir = Path(__file__).with_name("tasks")
+
+    discovered_modules: list[str] = []
+    for path in sorted(tasks_dir.iterdir(), key=lambda candidate: candidate.name):
+        if path.name.startswith((".", "_")):
+            continue
+
+        if path.is_file():
+            if path.suffix != ".py" or path.name == "__init__.py":
+                continue
+            discovered_modules.append(f"{root_package}.{path.stem}")
+            continue
+
+        if not path.is_dir():
+            continue
+
+        package_name = path.name
+        candidate_names = ("task.py", f"{package_name}.py", "__init__.py")
+        for candidate_name in candidate_names:
+            candidate_path = path / candidate_name
+            if not candidate_path.is_file():
+                continue
+
+            if candidate_name == "__init__.py":
+                discovered_modules.append(f"{root_package}.{package_name}")
+            else:
+                discovered_modules.append(
+                    f"{root_package}.{package_name}.{candidate_path.stem}"
+                )
+            break
+
+    return tuple(discovered_modules)
+
+
+DISCOVERED_TASK_MODULES = discover_task_modules()
 REGISTRY_MODULES = (
     *REGISTRY_ONLY_MODULES,
-    *dict.fromkeys(target.split(":", 1)[0] for target in REGISTRY_EXPORTS.values()),
+    *dict.fromkeys(
+        [
+            *(target.split(":", 1)[0] for target in REGISTRY_EXPORTS.values()),
+            *DISCOVERED_TASK_MODULES,
+        ]
+    ),
 )
 
 
