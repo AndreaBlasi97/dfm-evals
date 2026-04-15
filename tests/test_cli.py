@@ -96,6 +96,33 @@ def test_packaged_fundamentals_include_short_ruler_lengths() -> None:
     assert all(any(arg.startswith("variant=") for arg in task.args) for task in ruler_tasks)
 
 
+def test_packaged_fundamentals_include_wmt24pp_translation() -> None:
+    suites = cli._load_named_suites(cli.DEFAULT_SUITES_FILE)
+
+    suite = suites["fundamentals"]
+    wmt24pp_tasks = [task for task in suite.tasks if task.name == "wmt24pp-en-da"]
+
+    assert [(task.name, task.args) for task in wmt24pp_tasks] == [
+        ("wmt24pp-en-da", ["-T", "max_gen_toks=512"]),
+    ]
+
+
+def test_packaged_suites_include_wmt24pp_translation_suite() -> None:
+    suites = cli._load_named_suites(cli.DEFAULT_SUITES_FILE)
+
+    suite = suites["wmt24pp_en_da"]
+
+    assert [(task.name, task.args) for task in suite.tasks] == [
+        ("wmt24pp-en-da", ["-T", "max_gen_toks=512"]),
+    ]
+    assert suite.args == [
+        "--model",
+        "{{target_model}}",
+        "--temperature",
+        "0",
+    ]
+
+
 def test_optional_registry_import_is_ignored_when_package_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

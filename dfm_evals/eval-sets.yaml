@@ -61,6 +61,10 @@ sets:
       - danish-citizen-tests
       - dala
       - gec_dala
+      - name: wmt24pp-en-da
+        args:
+          - -T
+          - max_gen_toks=512
       - name: multi_wiki_qa
         args:
           - -T
@@ -152,6 +156,18 @@ sets:
       - "250"
       - --sample-shuffle
       - "4242"
+      - --temperature
+      - "0"
+  wmt24pp_en_da:
+    description: WMT24++ English-to-Danish translation task
+    tasks:
+      - name: wmt24pp-en-da
+        args:
+          - -T
+          - max_gen_toks=512
+    args:
+      - --model
+      - "{{target_model}}"
       - --temperature
       - "0"
   ruler_only:
